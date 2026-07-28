@@ -78,6 +78,31 @@ def create_history() -> List[BaseMessage]:
     return [SystemMessage(content=build_system_prompt())]
 
 
+def extract_text(content) -> str:
+    """Pull plain text out of a message's content, whatever shape it's in.
+
+    Some providers (newer Gemini models among them) return content as a list
+    of blocks - {"type": "text", "text": ..., "extras": {...}} - rather than a
+    plain string, so the response can carry a "signature" or other metadata
+    block alongside the text. Concatenating just the text blocks is what a
+    plain string would have been.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") in (None, "text"):
+                text = block.get("text")
+                if text:
+                    parts.append(text)
+        if parts:
+            return "".join(parts)
+    return str(content)
+
+
 def trim_history(
     messages: List[BaseMessage], max_messages: Optional[int] = None
 ) -> List[BaseMessage]:
@@ -125,7 +150,7 @@ def ask(
 
         tool_calls = getattr(response, "tool_calls", None)
         if not tool_calls:
-            answer = response.content if isinstance(response.content, str) else str(response.content)
+            answer = extract_text(response.content)
             history.append(AIMessage(content=answer))
             return answer
 
@@ -146,6 +171,6 @@ def ask(
         )
     )
     final = llm.invoke(messages)
-    answer = final.content if isinstance(final.content, str) else str(final.content)
+    answer = extract_text(final.content)
     history.append(AIMessage(content=answer))
     return answer

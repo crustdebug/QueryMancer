@@ -29,8 +29,17 @@ class ModelConfig:
 
 QWEN_2_5 = ModelConfig("qwen2.5:latest", 0.0, ModelProvider.OLLAMA)
 EXAONE = ModelConfig("lgai/exaone-3-5-32b-instruct", 0.0, ModelProvider.TOGETHER)
-GEMINI_FLASH = ModelConfig("gemini-2.0-flash", 0.0, ModelProvider.GEMINI, 1_000_000)
-GEMINI_FLASH_LITE = ModelConfig("gemini-2.0-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
+
+# gemini-2.0-flash and gemini-2.0-flash-lite were confirmed working when this
+# app was first built, but Google has since zeroed their free-tier quota
+# ("limit: 0" on every call) in favor of newer generations. gemini-3.5-flash-lite
+# is the current free-tier model as of 2026-07; the "-latest" aliases below
+# track whichever generation Google currently points them at, so they serve as
+# a fallback that shouldn't go stale the same way. Pin an exact version instead
+# of an alias if you need reproducible output across a deployment's lifetime.
+GEMINI_FLASH = ModelConfig("gemini-3.5-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
+GEMINI_FLASH_LITE = ModelConfig("gemini-flash-lite-latest", 0.0, ModelProvider.GEMINI, 1_000_000)
+GEMINI_FLASH_LATEST = ModelConfig("gemini-flash-latest", 0.0, ModelProvider.GEMINI, 1_000_000)
 PPLX_SONAR = ModelConfig("sonar", 0.0, ModelProvider.PERPLEXITY)
 LLAMA_3_3_70B = ModelConfig("llama-3.3-70b-versatile", 0.0, ModelProvider.GROQ, 128_000)
 
@@ -90,7 +99,13 @@ class Config:
     MODEL = GEMINI_FLASH
 
     # Ordered fallbacks. Each entry must have credentials to be considered.
-    FALLBACK_MODELS = [GEMINI_FLASH_LITE, LLAMA_3_3_70B, PPLX_SONAR, QWEN_2_5]
+    FALLBACK_MODELS = [
+        GEMINI_FLASH_LITE,
+        GEMINI_FLASH_LATEST,
+        LLAMA_3_3_70B,
+        PPLX_SONAR,
+        QWEN_2_5,
+    ]
 
     OLLAMA_CONTEXT_WINDOW = 8192
 
