@@ -12,8 +12,11 @@ import asyncio
 import datetime as dt
 import decimal
 import logging
+import os
+import secrets
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -42,7 +45,125 @@ log = logging.getLogger("querymancer")
 STATIC_DIR = Path(__file__).parent / "web"
 COOKIE_NAME = "querymancer_session"
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+# The session id is the only thing standing between one user's database
+# connection and another's, so the cookie carrying it must not travel over
+# plain HTTP.
+#
+# Marked Secure per-request rather than globally: a browser silently discards
+# a Secure cookie sent over http://, so forcing it on would lock out anyone
+# running locally without TLS - they would unlock successfully and then be
+# asked to unlock again, with nothing to explain why. Deployments terminate
+# TLS at a proxy, so the forwarded-proto header is honoured too.
+#
+# Set QUERYMANCER_FORCE_SECURE_COOKIE=1 to require it unconditionally.
+FORCE_SECURE_COOKIE = _env_flag("QUERYMANCER_FORCE_SECURE_COOKIE", False)
+
+
+def _is_https(request) -> bool:
+    if request is None:
+        return False
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip() == "https"
+    return request.url.scheme == "https"
+
+
+# The scheme of the request being served, so _session_response can decide the
+# cookie's Secure flag without every route having to accept and forward a
+# Request. A ContextVar rather than a global: concurrent requests must not see
+# each other's value.
+_https_request: ContextVar[bool] = ContextVar("_https_request", default=False)
+
+
+def cookie_secure(request=None) -> bool:
+    if FORCE_SECURE_COOKIE:
+        return True
+    if request is not None:
+        return _is_https(request)
+    return _https_request.get()
+
+# --- Access control -------------------------------------------------------
+# Without this, anyone who finds the URL can point the app at a database. It
+# is off by default so local use needs no setup, and enabled by setting
+# QUERYMANCER_ACCESS_CODE to a shared secret before deploying anywhere public.
+ACCESS_CODE = os.getenv("QUERYMANCER_ACCESS_CODE", "").strip()
+ACCESS_COOKIE = "querymancer_access"
+
 app = FastAPI(title="QueryMancer", docs_url=None, redoc_url=None)
+
+
+# Paths reachable without the access code: the unlock page itself, the
+# endpoint that checks the code, and the stylesheet that renders it.
+_PUBLIC_PATHS = {"/unlock", "/api/unlock", "/assets/style.css"}
+
+
+@app.middleware("http")
+async def record_scheme(request, call_next):
+    """Remember whether this request arrived over HTTPS, for cookie flags."""
+    token = _https_request.set(_is_https(request))
+    try:
+        return await call_next(request)
+    finally:
+        _https_request.reset(token)
+
+
+@app.middleware("http")
+async def require_access_code(request, call_next):
+    """Gate the whole app behind a shared access code, when one is configured.
+
+    Applied as middleware rather than per-route so a route added later is
+    protected by default - the failure mode of a forgotten decorator is an
+    open database tool on the public internet.
+    """
+    if not ACCESS_CODE or request.url.path in _PUBLIC_PATHS:
+        return await call_next(request)
+
+    supplied = request.cookies.get(ACCESS_COOKIE, "")
+    # compare_digest: a plain == leaks the code through timing.
+    if supplied and secrets.compare_digest(supplied, ACCESS_CODE):
+        return await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"ok": False, "message": "Access code required."}, status_code=401)
+    return FileResponse(STATIC_DIR / "unlock.html", status_code=401)
+
+
+@app.post("/api/unlock")
+async def unlock(payload: dict = Body(...)):
+    """Exchange the access code for a cookie."""
+    if not ACCESS_CODE:
+        return JSONResponse({"ok": True})
+
+    supplied = str(payload.get("code") or "")
+    if not (supplied and secrets.compare_digest(supplied, ACCESS_CODE)):
+        # Deliberately vague, and slowed slightly to blunt guessing.
+        await asyncio.sleep(0.5)
+        return JSONResponse({"ok": False, "message": "Incorrect access code."}, status_code=401)
+
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        ACCESS_COOKIE,
+        ACCESS_CODE,
+        httponly=True,
+        samesite="lax",
+        secure=cookie_secure(),
+        max_age=30 * 24 * 3600,
+        path="/",
+    )
+    return response
+
+
+@app.get("/unlock")
+def unlock_page():
+    return FileResponse(STATIC_DIR / "unlock.html")
 
 # One model per process. The key pool's cooldown state lives on it, so
 # rebuilding per request would forget which keys are rate-limited.
@@ -97,6 +218,7 @@ def _session_response(payload: dict, session, response: Response) -> JSONRespons
         session.id,
         httponly=True,      # page scripts cannot read it
         samesite="lax",     # not sent on cross-site requests
+        secure=cookie_secure(),  # HTTPS only; see cookie_secure()
         max_age=session_module.SESSION_IDLE_SECONDS,
         path="/",
     )
@@ -143,6 +265,7 @@ def get_state(querymancer_session: Optional[str] = Cookie(default=None)):
         state["conversations"] = [c.summary() for c in session.ordered_conversations()]
         state["suggestions"] = _suggestions_for(session)
         state["modelReady"] = _model_status()
+        state["privacy"] = Config.privacy_mode()
 
     return _session_response(state, session, Response())
 

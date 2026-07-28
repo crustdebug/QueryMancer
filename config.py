@@ -126,6 +126,33 @@ class Config:
         QWEN_2_5,
     ]
 
+    # --- Local-only mode --------------------------------------------------
+    # Answering a question means sending rows of real data to whichever model
+    # is serving it. With LOCAL_ONLY set, only providers that run on your own
+    # machine are used, so no database content leaves your infrastructure.
+    #
+    # This is enforced here rather than left to the user removing their API
+    # keys: an Ollama model sitting at the end of the fallback chain is only
+    # reached once every cloud key is exhausted, which means a .env with a
+    # leftover GOOGLE_API_KEY would quietly send data to Google despite the
+    # user having installed Ollama specifically to avoid that.
+    LOCAL_ONLY = os.getenv("QUERYMANCER_LOCAL_ONLY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+    # Providers that run on the user's own hardware. Only these are considered
+    # when LOCAL_ONLY is set.
+    LOCAL_PROVIDERS = frozenset({ModelProvider.OLLAMA})
+
+    # The local model used in LOCAL_ONLY mode. Override with OLLAMA_MODEL to
+    # run a larger one - tool calling needs a model trained for it, so not
+    # every Ollama model works here.
+    LOCAL_MODEL = ModelConfig(
+        os.getenv("OLLAMA_MODEL", "qwen2.5:latest").strip() or "qwen2.5:latest",
+        0.0,
+        ModelProvider.OLLAMA,
+    )
+
     OLLAMA_CONTEXT_WINDOW = 8192
 
     # How long a key is benched after the provider reports a rate limit.
@@ -184,13 +211,42 @@ class Config:
 
     @classmethod
     def model_chain(cls) -> List[ModelConfig]:
-        """The primary model followed by every fallback that has credentials."""
+        """The primary model followed by every fallback that has credentials.
+
+        In LOCAL_ONLY mode the chain contains only locally-hosted models, so a
+        cloud provider cannot be reached even if its API key is configured.
+        """
+        if cls.LOCAL_ONLY:
+            # Built from LOCAL_MODEL plus any local fallbacks, rather than
+            # filtering the normal chain: the guarantee should not depend on
+            # the ordering of a list someone may edit later.
+            chain = [cls.LOCAL_MODEL] + [
+                model
+                for model in cls.FALLBACK_MODELS
+                if model.provider in cls.LOCAL_PROVIDERS
+                and model.name != cls.LOCAL_MODEL.name
+            ]
+            return chain
+
         chain = [cls.MODEL]
         for model in cls.FALLBACK_MODELS:
             if model.provider == cls.MODEL.provider and model.name == cls.MODEL.name:
                 continue
             chain.append(model)
         return [model for model in chain if cls.credentials(model.provider).available]
+
+    @classmethod
+    def privacy_mode(cls) -> dict:
+        """How the current configuration handles data, for display in the UI."""
+        chain = cls.model_chain()
+        local = all(model.provider in cls.LOCAL_PROVIDERS for model in chain)
+        return {
+            "localOnly": bool(cls.LOCAL_ONLY),
+            # True only when nothing in the chain can reach a third party, so
+            # the UI never claims a guarantee the configuration does not give.
+            "dataStaysLocal": bool(chain) and local,
+            "models": [f"{m.provider.value}/{m.name}" for m in chain],
+        }
 
     # How many tables the database overview lists before summarising. Raise it
     # for very large schemas at the cost of more tokens per call.

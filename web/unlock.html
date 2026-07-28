@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QueryMancer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="unlock-page">
+  <form id="unlock-form" class="unlock-card" autocomplete="off">
+    <div class="modal-head">
+      <div class="modal-mark">Q</div>
+      <div class="modal-title">QueryMancer</div>
+    </div>
+
+    <div class="field">
+      <label for="code">Access code</label>
+      <input id="code" name="code" type="password" autocomplete="current-password" autofocus>
+    </div>
+
+    <div id="unlock-error" class="modal-error is-hidden"></div>
+
+    <button id="unlock-button" class="primary-button" type="submit">Unlock</button>
+  </form>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const form = document.getElementById("unlock-form");
+  const input = document.getElementById("code");
+  const error = document.getElementById("unlock-error");
+  const button = document.getElementById("unlock-button");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    error.classList.add("is-hidden");
+    try {
+      const response = await fetch("/api/unlock", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: input.value }),
+      });
+      const data = await response.json();
+      if (data.ok) {
+        window.location.href = "/";
+        return;
+      }
+      error.textContent = data.message || "Incorrect access code.";
+      error.classList.remove("is-hidden");
+    } catch (err) {
+      error.textContent = "Could not reach the server.";
+      error.classList.remove("is-hidden");
+    } finally {
+      button.disabled = false;
+      input.select();
+    }
+  });
+})();
+</script>
+</body>
+</html>

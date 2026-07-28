@@ -102,11 +102,95 @@ When a key returns a rate-limit error it is benched for
 `Config.KEY_COOLDOWN_SECONDS` and the next key takes over. A key rejected for
 bad credentials is retired immediately rather than retried. When every key for
 a model is unavailable, the app falls back to the next entry in
-`Config.FALLBACK_MODELS` — by default `gemini-2.0-flash-lite`, then Groq, then
-Perplexity, then a local Ollama model. Each provider has separate quota, so
-adding a Groq key roughly doubles your headroom again.
+`Config.FALLBACK_MODELS` — by default `gemini-3.1-flash-lite`, then the other
+Gemini models, then Groq, then Perplexity, then a local Ollama model. Each
+provider has separate quota, so adding a Groq key roughly doubles your
+headroom again.
 
 The sidebar shows each key's status, call count, and rate-limit count.
+
+## Private mode: keeping your data off third-party APIs
+
+Answering a question means sending rows of real data to whichever model is
+serving it. That is unavoidable for a cloud model — an LLM cannot tell you
+which customer spent the most without seeing customer data.
+
+If that is not acceptable for your data, run a local model instead:
+
+```bash
+# 1. Install Ollama and pull a model that supports tool calling
+ollama pull qwen2.5
+
+# 2. Turn on local-only mode
+QUERYMANCER_LOCAL_ONLY=1 python -m uvicorn server:app
+```
+
+In this mode **no database content leaves your machine**. The model runs
+locally, and cloud providers are excluded from the fallback chain entirely.
+
+This is enforced in `Config.model_chain()` rather than left to you removing
+your API keys, and the reason matters: an Ollama model sitting at the end of
+the normal fallback chain is only reached once every cloud key is exhausted.
+Without the flag, a `.env` with a leftover `GOOGLE_API_KEY` would quietly send
+your data to Google despite you having installed Ollama specifically to avoid
+that. With `QUERYMANCER_LOCAL_ONLY=1`, that key is ignored.
+
+When the whole chain is local, the app shows a "your data never leaves this
+machine" badge. It appears only when that is actually true — a chain that can
+still reach a cloud provider shows nothing rather than a claim it cannot keep.
+
+| Variable | Effect |
+|---|---|
+| `QUERYMANCER_LOCAL_ONLY=1` | Use only locally-hosted models |
+| `OLLAMA_MODEL` | Which Ollama model to use (default `qwen2.5:latest`) |
+
+Local models are slower and less accurate at SQL than Gemini. That is the
+trade: correctness and speed against your data never leaving the building.
+
+## Deploying it somewhere public
+
+Three things to set before exposing this to the internet.
+
+**1. Require an access code.** Without one, anyone who finds the URL can point
+the app at a database.
+
+```bash
+QUERYMANCER_ACCESS_CODE=some-long-shared-secret
+```
+
+Every route is then gated behind an unlock page. This is applied as
+middleware, so a route added later is protected by default.
+
+**2. Serve it over HTTPS.** The session cookie is marked `Secure`
+automatically when the request arrives over HTTPS, including via a proxy's
+`X-Forwarded-Proto` header. Set `QUERYMANCER_FORCE_SECURE_COOKIE=1` to require
+it unconditionally.
+
+**3. Know that sessions are in-memory.** A restart or redeploy disconnects
+everyone — they will need to re-enter their database credentials. That is
+deliberate: credentials are never written to disk, so there is nothing to
+persist and nothing to steal from the filesystem. It does mean the app does
+not survive a restart gracefully, and does not run as multiple instances
+behind a load balancer without sticky sessions.
+
+### Database load
+
+Pointing this at a database your main application also uses will affect that
+application. The pool defaults to SQLAlchemy's settings (up to 15 connections
+per session), sessions last 8 hours, and a generated query can scan a large
+table for the full `STATEMENT_TIMEOUT_SECONDS` before being cut off.
+
+Prefer a **read replica**. Failing that, give QueryMancer its own database
+user with a hard connection limit, so it cannot starve your application:
+
+```sql
+CREATE USER querymancer WITH PASSWORD '...';
+GRANT CONNECT ON DATABASE yourdb TO querymancer;
+GRANT USAGE ON SCHEMA public TO querymancer;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO querymancer;
+ALTER ROLE querymancer SET statement_timeout = '10s';
+ALTER ROLE querymancer CONNECTION LIMIT 5;
+```
 
 ## Staying inside your limits
 

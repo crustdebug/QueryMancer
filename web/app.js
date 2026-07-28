@@ -54,6 +54,8 @@
     statKeys: $("stat-keys"),
     tableSearch: $("table-search"),
     tableList: $("table-list"),
+    privacyNote: $("privacy-note"),
+    privacyText: $("privacy-text"),
     btnRefreshSchema: $("btn-refresh-schema"),
     headerTitle: $("header-title"),
     headerBadge: $("header-badge"),
@@ -246,6 +248,20 @@
       state.connectionEngineLabel = "";
       state.connectionFullName = "";
       el.headerTitle.textContent = "QueryMancer";
+    }
+  }
+
+  /**
+   * Show the local-only badge only when every model in the chain runs on this
+   * machine. Claiming privacy the configuration does not actually provide
+   * would be worse than saying nothing, so a mixed chain shows nothing.
+   */
+  function renderPrivacy(privacy) {
+    const local = privacy && privacy.dataStaysLocal;
+    el.privacyNote.classList.toggle("is-hidden", !local);
+    if (local) {
+      el.privacyText.textContent = "Local model · your data never leaves this machine";
+      el.privacyNote.title = `Answering with ${(privacy.models || []).join(", ")}.`;
     }
   }
 
@@ -616,6 +632,7 @@
     state.engines = data.engines || [];
     state.conversations = data.conversations || [];
     state.suggestions = data.suggestions || [];
+    renderPrivacy(data.privacy);
     renderEngines();
     renderConnection(data);
     renderHistory();
