@@ -462,3 +462,119 @@ def test_cache_statistics_track_hits_and_misses(client, db_path):
     stats = server._answer_cache.stats()
     assert stats["hits"] >= 1
     assert stats["entries"] >= 1
+
+
+# --- demo database --------------------------------------------------------
+
+
+DEMO_SECRET = "dem0-Pa55word!"
+
+
+def test_no_demo_offered_when_none_is_configured(client, monkeypatch):
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", "")
+    assert client.get("/api/state").json()["demo"]["available"] is False
+
+
+def test_demo_is_offered_when_configured(client, monkeypatch, db_path):
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", f"sqlite:///{db_path}")
+    assert client.get("/api/state").json()["demo"]["available"] is True
+
+
+def test_state_never_reveals_the_demo_connection_string(client, monkeypatch):
+    """The whole point of the button: the browser learns a demo exists, not
+    how to connect to it."""
+    monkeypatch.setattr(
+        server,
+        "DEMO_DATABASE_URL",
+        f"postgresql://demo:{DEMO_SECRET}@db.internal:5432/shop",
+    )
+    body = client.get("/api/state").text
+    assert DEMO_SECRET not in body
+    assert "db.internal" not in body
+
+
+def test_connecting_to_the_demo_works(client, monkeypatch, db_path):
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", f"sqlite:///{db_path}")
+    body = client.post("/api/connect-demo").json()
+    assert body["ok"] is True
+    assert body["connected"] is True
+    assert client.get("/api/state").json()["connected"] is True
+
+
+def test_the_demo_response_reveals_neither_credentials_nor_location(
+    client, monkeypatch, db_path
+):
+    """Not just the password: the host, user and database name of a demo the
+    visitor did not supply are not theirs to see either. A hosted demo would
+    otherwise hand out demo_user@ep-xxx.neon.tech:5432/neondb - everything
+    needed to attack it except the password."""
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", f"sqlite:///{db_path}")
+    connect_body = client.post("/api/connect-demo").text
+    state_body = client.get("/api/state").text
+
+    for body in (connect_body, state_body):
+        assert "shop.db" not in body, "demo location leaked"
+        assert db_path not in body
+        assert "sqlite:///" not in body
+
+
+def test_the_conversation_stamp_does_not_leak_the_demo_location(
+    client, monkeypatch, db_path
+):
+    """Every history row carries a database stamp. It records display_name,
+    which for a demo would be the real filename - making the sidebar the one
+    place a visitor could read where the demo actually lives."""
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setattr(server, "DEMO_LABEL", "Sample data")
+    client.post("/api/connect-demo")
+    client.post("/api/ask", json={"question": "List the customers"})
+
+    body = client.get("/api/state").text
+    assert "shop.db" not in body
+    summary = client.get("/api/state").json()["conversations"][0]
+    assert summary["database"] == "Sample data"
+
+
+def test_a_users_own_connection_still_shows_where_they_are_attached(client, db_path):
+    """The withholding applies only to the demo: a database the visitor typed
+    in themselves must still be identified in the sidebar."""
+    connect(client, db_path)
+    assert "shop.db" in client.get("/api/state").text
+
+
+def test_connecting_your_own_database_after_the_demo_clears_the_demo_flag(
+    client, monkeypatch, db_path
+):
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", f"sqlite:///{db_path}")
+    client.post("/api/connect-demo")
+    assert client.get("/api/state").json()["isDemo"] is True
+    connect(client, db_path)
+    assert client.get("/api/state").json()["isDemo"] is False
+
+
+def test_a_failing_demo_does_not_leak_the_url_in_the_error(client, monkeypatch):
+    """Driver errors quote the connection URL, and this endpoint is public."""
+    monkeypatch.setattr(
+        server,
+        "DEMO_DATABASE_URL",
+        f"postgresql://demo:{DEMO_SECRET}@127.0.0.1:1/nope",
+    )
+    response = client.post("/api/connect-demo")
+    assert response.json()["ok"] is False
+    assert DEMO_SECRET not in response.text
+    assert "127.0.0.1" not in response.text
+
+
+def test_connecting_to_an_unconfigured_demo_is_refused(client, monkeypatch):
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", "")
+    body = client.post("/api/connect-demo").json()
+    assert body["ok"] is False
+
+
+def test_the_demo_connection_is_usable_for_questions(client, monkeypatch, db_path):
+    """Connecting is not enough - the session must actually be able to answer."""
+    monkeypatch.setattr(server, "DEMO_DATABASE_URL", f"sqlite:///{db_path}")
+    client.post("/api/connect-demo")
+    body = client.post("/api/ask", json={"question": "List the customers"}).json()
+    assert body["ok"] is True
+    assert body["message"]["rows"]

@@ -97,6 +97,17 @@ def cookie_secure(request=None) -> bool:
 ACCESS_CODE = os.getenv("QUERYMANCER_ACCESS_CODE", "").strip()
 ACCESS_COOKIE = "querymancer_access"
 
+# --- Demo database --------------------------------------------------------
+# A sample database visitors can connect to with one click, so the app can be
+# tried without having one of their own.
+#
+# The URL is read here and used only server-side: it is never included in any
+# API response, so the browser can start a demo session without ever learning
+# the credentials. Point it at a read-only user on throwaway data - a visitor
+# can run any SELECT they can get the model to write.
+DEMO_DATABASE_URL = os.getenv("QUERYMANCER_DEMO_URL", "").strip()
+DEMO_LABEL = os.getenv("QUERYMANCER_DEMO_LABEL", "Demo database").strip()
+
 app = FastAPI(title="QueryMancer", docs_url=None, redoc_url=None)
 
 
@@ -243,6 +254,23 @@ def _connection_state(session) -> dict:
     if connection is None:
         return {"connected": False}
     settings = connection.settings
+
+    # A demo connection is one the visitor did not supply, so its location is
+    # not theirs to see: host, user and file path are all withheld. For a
+    # connection they entered themselves these fields are just an echo of what
+    # they already typed, and the sidebar uses them to show where they are
+    # attached.
+    if getattr(session, "is_demo", False):
+        return {
+            "connected": True,
+            "name": DEMO_LABEL,
+            "fullName": DEMO_LABEL,
+            "engine": settings.engine,
+            "engineLabel": settings.label,
+            "summary": DEMO_LABEL,
+            "isDemo": True,
+        }
+
     return {
         "connected": True,
         # Never includes the password.
@@ -253,6 +281,7 @@ def _connection_state(session) -> dict:
         "engine": settings.engine,
         "engineLabel": settings.label,
         "summary": settings.summary,
+        "isDemo": False,
     }
 
 
@@ -279,6 +308,8 @@ def get_state(querymancer_session: Optional[str] = Cookie(default=None)):
         state["suggestions"] = _suggestions_for(session)
         state["modelReady"] = _model_status()
         state["privacy"] = Config.privacy_mode()
+        # Whether a demo is offered, and what to call it - never the URL.
+        state["demo"] = {"available": bool(DEMO_DATABASE_URL), "label": DEMO_LABEL}
 
     return _session_response(state, session, Response())
 
@@ -334,6 +365,9 @@ def connect(
 
         schema_module.clear_cache()
         ok, message = session_module.connect(settings)
+        if ok:
+            # A database the visitor supplied: its location is theirs to see.
+            session.is_demo = False
 
         body: dict = {"ok": ok, "message": sanitize(message, settings)}
         if ok:
@@ -343,11 +377,61 @@ def connect(
         return _session_response(body, session, Response())
 
 
+@app.post("/api/connect-demo")
+def connect_demo(querymancer_session: Optional[str] = Cookie(default=None)):
+    """Connect the session to the sample database, if one is configured.
+
+    The connection string stays on the server: it is parsed here and the
+    resulting settings are installed on the session, so the response carries
+    only the same display fields as a normal connect. Nothing a visitor
+    receives lets them reconstruct the credentials.
+    """
+    session = session_module.store.get_or_create(querymancer_session)
+
+    if not DEMO_DATABASE_URL:
+        return _session_response(
+            {"ok": False, "message": "No demo database is configured."},
+            session,
+            Response(),
+        )
+
+    with session_module.use_session(session):
+        try:
+            settings = ConnectionSettings.from_url(DEMO_DATABASE_URL)
+        except (ValueError, TypeError):
+            # The message deliberately omits the reason: a parse error can
+            # quote the URL, and this endpoint is reachable by anyone.
+            log.exception("Demo database URL is not valid")
+            return _session_response(
+                {"ok": False, "message": "The demo database is misconfigured."},
+                session,
+                Response(),
+            )
+
+        schema_module.clear_cache()
+        ok, _ = session_module.connect(settings)
+        session.is_demo = ok
+        session.demo_label = DEMO_LABEL
+
+        # The driver's own message names the host or file it connected to, so
+        # it is replaced outright rather than sanitised: sanitize() removes
+        # passwords, but the location is withheld here too.
+        body: dict = {
+            "ok": ok,
+            "message": f"Connected to {DEMO_LABEL}." if ok else "Could not reach the demo database.",
+        }
+        if ok:
+            body.update(_connection_state(session))
+            body["suggestions"] = _suggestions_for(session)
+        return _session_response(body, session, Response())
+
+
 @app.post("/api/disconnect")
 def disconnect(querymancer_session: Optional[str] = Cookie(default=None)):
     session = session_module.store.get_or_create(querymancer_session)
     with session_module.use_session(session):
         session_module.disconnect()
+        session.is_demo = False
         schema_module.clear_cache()
     return _session_response({"ok": True, "connected": False}, session, Response())
 

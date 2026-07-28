@@ -97,6 +97,13 @@ class Conversation:
 class Session:
     id: str
     connection: Optional[DatabaseConnection] = None
+    # True when the connection came from the server's configured demo
+    # database rather than credentials the visitor supplied. Its location is
+    # then withheld from API responses - see _connection_state in server.py.
+    is_demo: bool = False
+    # What to call the demo instead of its real name. Set by the server when
+    # the demo is connected; kept here so this module needs no import of it.
+    demo_label: str = "Demo database"
     conversations: Dict[str, Conversation] = field(default_factory=dict)
     order: List[str] = field(default_factory=list)
     last_seen: float = field(default_factory=time.time)
@@ -111,7 +118,13 @@ class Session:
         # conversation records it, including future ones.
         settings = self.connection.settings if self.connection is not None else None
         if settings is not None:
-            conversation.database = settings.display_name
+            # The stamp is shown on every history row, so for a demo session it
+            # must use the same withheld label as the rest of the API rather
+            # than the real database name - otherwise the sidebar becomes the
+            # one place a visitor can read where the demo actually lives.
+            conversation.database = (
+                self.demo_label if self.is_demo else settings.display_name
+            )
             conversation.engine = settings.engine
             conversation.engine_label = settings.label
         self.conversations[conversation.id] = conversation

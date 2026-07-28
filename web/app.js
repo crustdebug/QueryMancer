@@ -56,6 +56,8 @@
     tableList: $("table-list"),
     privacyNote: $("privacy-note"),
     privacyText: $("privacy-text"),
+    demoBlock: $("demo-block"),
+    btnTryDemo: $("btn-try-demo"),
     btnRefreshSchema: $("btn-refresh-schema"),
     headerTitle: $("header-title"),
     headerBadge: $("header-badge"),
@@ -633,6 +635,9 @@
     state.conversations = data.conversations || [];
     state.suggestions = data.suggestions || [];
     renderPrivacy(data.privacy);
+    // The server says only whether a demo exists, never its connection
+    // string, so the button can be offered without exposing credentials.
+    el.demoBlock.classList.toggle("is-hidden", !(data.demo && data.demo.available));
     renderEngines();
     renderConnection(data);
     renderHistory();
@@ -934,6 +939,42 @@
     }
   }
 
+  /** Connect to the sample database. The server holds the credentials. */
+  async function connectDemo() {
+    if (state.busy) return;
+    state.busy = true;
+    el.btnTryDemo.disabled = true;
+    const original = el.btnTryDemo.innerHTML;
+    el.btnTryDemo.innerHTML =
+      `<span class="demo-button-title"><span class="spinner"></span>Connecting…</span>`;
+
+    try {
+      const data = await api("/api/connect-demo", { method: "POST" });
+      if (!data.ok) {
+        el.btnTryDemo.innerHTML =
+          `<span class="demo-button-title">Demo unavailable</span>` +
+          `<span class="demo-button-sub">${esc(data.message || "")}</span>`;
+        return;
+      }
+      state.suggestions = data.suggestions || [];
+      state.messages = [];
+      state.activeId = null;
+      renderConnection(data);
+      renderSuggestions();
+      renderMessages();
+      refreshConversations();
+      el.input.focus();
+    } catch (error) {
+      el.btnTryDemo.innerHTML =
+        `<span class="demo-button-title">Could not reach the server</span>`;
+    } finally {
+      state.busy = false;
+      el.btnTryDemo.disabled = false;
+      // Restore the label only on success; a failure message stays visible.
+      if (state.connected) el.btnTryDemo.innerHTML = original;
+    }
+  }
+
   async function disconnect() {
     await api("/api/disconnect", { method: "POST" });
     state.connected = false;
@@ -972,6 +1013,7 @@
   el.btnCancel.addEventListener("click", closeModal);
   el.btnChange.addEventListener("click", disconnect);
   el.btnNew.addEventListener("click", startNewConversation);
+  el.btnTryDemo.addEventListener("click", connectDemo);
   el.btnUseUrl.addEventListener("click", () => {
     openModal(state.pendingEngine);
     state.usingUrl = true;
