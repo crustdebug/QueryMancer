@@ -371,3 +371,94 @@ def test_database_values_survive_json(tmp_path, monkeypatch):
     assert server._jsonable(datetime.date(2026, 7, 28)) == "2026-07-28"
     assert "bytes" in server._jsonable(b"\x00\x01\x02")
     assert server._jsonable(None) is None
+
+
+# --- answer caching -------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clear_answer_cache():
+    """The cache is process-wide, so tests must not leak into each other."""
+    server._answer_cache.invalidate()
+    yield
+    server._answer_cache.invalidate()
+
+
+def test_repeating_a_question_skips_the_model(client, db_path):
+    """The point of the cache: a re-ask costs no LLM calls."""
+    connect(client, db_path)
+    first = client.post("/api/ask", json={"question": "List the customers"}).json()
+    calls_after_first = server._model.calls
+
+    second = client.post("/api/ask", json={"question": "List the customers"}).json()
+    assert server._model.calls == calls_after_first, "model was called again"
+    assert second["message"]["text"] == first["message"]["text"]
+    assert second["message"]["cached"] is True
+    assert first["message"]["cached"] is False
+
+
+def test_a_cached_answer_keeps_its_sql_and_rows(client, db_path):
+    connect(client, db_path)
+    first = client.post("/api/ask", json={"question": "List the customers"}).json()
+    second = client.post("/api/ask", json={"question": "List the customers"}).json()
+    assert second["message"]["sql"] == first["message"]["sql"]
+    assert second["message"]["rows"] == first["message"]["rows"]
+    assert second["message"]["columns"] == first["message"]["columns"]
+
+
+def test_a_different_question_is_not_served_from_the_cache(client, db_path):
+    connect(client, db_path)
+    client.post("/api/ask", json={"question": "List the customers"})
+    calls = server._model.calls
+    body = client.post("/api/ask", json={"question": "Count the orders"}).json()
+    assert server._model.calls > calls
+    assert body["message"]["cached"] is False
+
+
+def test_a_follow_up_is_never_served_from_the_cache(client, db_path):
+    """A follow-up depends on what came before it, so the question text alone
+    does not identify the answer."""
+    connect(client, db_path)
+    first = client.post("/api/ask", json={"question": "List the customers"}).json()
+    calls = server._model.calls
+
+    # The same text again, but inside the existing conversation.
+    follow_up = client.post(
+        "/api/ask",
+        json={"question": "List the customers", "conversationId": first["conversationId"]},
+    ).json()
+    assert server._model.calls > calls, "follow-up wrongly served from cache"
+    assert follow_up["message"]["cached"] is False
+
+
+def test_the_same_question_against_another_database_is_recomputed(client, db_path, tmp_path):
+    """Two databases must never share a cached answer."""
+    connect(client, db_path)
+    client.post("/api/ask", json={"question": "List the customers"})
+    calls = server._model.calls
+
+    other = str(tmp_path / "other.db")
+    conn = sqlite3.connect(other)
+    conn.executescript(
+        "CREATE TABLE Customer(id INTEGER PRIMARY KEY, companyName TEXT);"
+        "INSERT INTO Customer(companyName) VALUES ('Different');"
+    )
+    conn.commit()
+    conn.close()
+
+    client.post("/api/disconnect")
+    connect(client, other)
+    body = client.post("/api/ask", json={"question": "List the customers"}).json()
+    assert server._model.calls > calls, "answer leaked across databases"
+    assert body["message"]["cached"] is False
+
+
+def test_cache_statistics_track_hits_and_misses(client, db_path):
+    """Asserted on the cache directly: /api/usage also reports these, but it
+    needs a real model object for the rest of its payload."""
+    connect(client, db_path)
+    client.post("/api/ask", json={"question": "List the customers"})
+    client.post("/api/ask", json={"question": "List the customers"})
+    stats = server._answer_cache.stats()
+    assert stats["hits"] >= 1
+    assert stats["entries"] >= 1

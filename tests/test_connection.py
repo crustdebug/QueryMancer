@@ -7,6 +7,7 @@ log, an error message, a rendered URL or a repr.
 import os
 import sqlite3
 import tempfile
+import time
 
 import pytest
 
@@ -285,3 +286,74 @@ def test_display_name_never_contains_the_password():
         engine="mysql", host="h", database="sales", username="u", password=SECRET,
     )
     assert SECRET not in settings.display_name
+
+
+# --- statement timeouts ---------------------------------------------------
+
+
+def test_postgres_gets_a_server_side_statement_timeout():
+    """A runaway generated query must be bounded by the server, so it still
+    applies if the client goes away mid-query."""
+    from connection import DatabaseConnection
+
+    settings = ConnectionSettings(
+        engine="postgresql", host="h", port=5432, database="d",
+        username="u", password=SECRET,
+    )
+    conn = DatabaseConnection(settings, statement_timeout=7)
+    assert "statement_timeout=7000" in conn.connect_args()["options"]
+
+
+def test_a_zero_timeout_installs_no_limit():
+    from connection import DatabaseConnection
+
+    settings = ConnectionSettings(
+        engine="postgresql", host="h", port=5432, database="d", username="u",
+    )
+    assert "options" not in DatabaseConnection(settings, statement_timeout=0).connect_args()
+
+
+def test_sqlite_queries_are_interrupted_past_the_deadline(tmp_path):
+    """SQLite has no statement_timeout, so a progress handler bounds it.
+    Verified against a real query that would otherwise run far longer."""
+    import sqlite3
+    from connection import DatabaseConnection
+
+    path = str(tmp_path / "slow.db")
+    sqlite3.connect(path).close()
+
+    conn = DatabaseConnection(
+        ConnectionSettings(engine="sqlite", database=path), statement_timeout=1
+    )
+    # A recursive CTE that would count to a billion if left alone.
+    runaway = (
+        "WITH RECURSIVE forever(n) AS ("
+        "  SELECT 1 UNION ALL SELECT n + 1 FROM forever WHERE n < 1000000000"
+        ") SELECT count(*) FROM forever"
+    )
+    started = time.monotonic()
+    with pytest.raises(Exception):
+        conn.run(runaway)
+    elapsed = time.monotonic() - started
+    # Interrupted near the deadline rather than running to completion.
+    assert elapsed < 15, f"query ran {elapsed:.1f}s despite a 1s timeout"
+    conn.dispose()
+
+
+def test_a_normal_query_is_unaffected_by_the_timeout(tmp_path):
+    """The timeout must not interfere with queries that finish quickly."""
+    import sqlite3
+    from connection import DatabaseConnection
+
+    path = str(tmp_path / "fine.db")
+    raw = sqlite3.connect(path)
+    raw.executescript("CREATE TABLE t(id INTEGER); INSERT INTO t VALUES (1),(2),(3);")
+    raw.commit()
+    raw.close()
+
+    conn = DatabaseConnection(
+        ConnectionSettings(engine="sqlite", database=path), statement_timeout=5
+    )
+    columns, rows, _ = conn.run("SELECT count(*) FROM t")
+    assert rows[0][0] == 3
+    conn.dispose()

@@ -329,11 +329,16 @@
     answer.innerHTML = renderMarkdown(message.text);
     bubble.appendChild(answer);
 
-    const chart = buildChart(message);
-    if (chart) bubble.appendChild(chart);
-
-    if (message.rows && message.rows.length) {
-      bubble.appendChild(buildTable(message));
+    // A single cell is a metric, not a table: render it as one.
+    const kpi = buildKpi(message);
+    if (kpi) {
+      bubble.appendChild(kpi);
+    } else {
+      const chart = buildChart(message);
+      if (chart) bubble.appendChild(chart);
+      if (message.rows && message.rows.length) {
+        bubble.appendChild(buildTable(message));
+      }
     }
 
     if (message.corrections && message.corrections.length) {
@@ -344,12 +349,100 @@
       bubble.appendChild(note);
     }
 
-    if (message.sql) {
-      bubble.appendChild(buildSqlDisclosure(message.sql));
+    const footer = document.createElement("div");
+    footer.className = "bubble-footer";
+
+    if (message.sql) footer.appendChild(buildSqlDisclosure(message.sql));
+
+    if (message.rows && message.rows.length) {
+      footer.appendChild(buildCsvButton(message));
     }
+
+    // Say when an answer was replayed rather than recomputed, so a stale
+    // number is never mistaken for a fresh one.
+    if (message.cached) {
+      const badge = document.createElement("span");
+      badge.className = "cached-badge";
+      badge.textContent = "cached";
+      badge.title = "Served from a recent identical question, without re-querying.";
+      footer.appendChild(badge);
+    }
+
+    if (footer.childNodes.length) bubble.appendChild(footer);
 
     row.appendChild(bubble);
     return row;
+  }
+
+  /**
+   * A single row with a single column is a metric (SUM, COUNT, AVG), and a
+   * 1x1 HTML table is a poor way to show one. Render it large instead.
+   */
+  function buildKpi(message) {
+    const rows = message.rows || [];
+    const columns = message.columns || [];
+    if (rows.length !== 1 || columns.length !== 1) return null;
+
+    const value = rows[0][0];
+    if (value === null || value === undefined) return null;
+
+    const card = document.createElement("div");
+    card.className = "kpi";
+
+    const figure = document.createElement("div");
+    figure.className = "kpi-value";
+    figure.textContent =
+      typeof value === "number" ? value.toLocaleString() : String(value);
+    // The exact value stays reachable when the display form is abbreviated.
+    figure.title = String(value);
+
+    const label = document.createElement("div");
+    label.className = "kpi-label";
+    label.textContent = columns[0];
+
+    card.append(figure, label);
+    return card;
+  }
+
+  /** Escape one CSV field per RFC 4180. */
+  function csvCell(value) {
+    if (value === null || value === undefined) return "";
+    const text = String(value);
+    // A leading =, +, - or @ makes a spreadsheet treat the cell as a formula,
+    // so those are prefixed with a quote. Database content is untrusted here
+    // in exactly the way a spreadsheet cares about.
+    const guarded = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+    return /[",\n\r]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
+  }
+
+  function toCsv(columns, rows) {
+    const lines = [columns.map(csvCell).join(",")];
+    for (const row of rows) lines.push(row.map(csvCell).join(","));
+    return lines.join("\r\n");
+  }
+
+  function buildCsvButton(message) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sql-toggle";
+    button.textContent = "↓ Download CSV";
+    button.addEventListener("click", () => {
+      const csv = toCsv(message.columns || [], message.rows || []);
+      // A BOM so Excel opens UTF-8 correctly rather than mangling accents.
+      const blob = new Blob(["﻿" + csv], {
+        type: "text/csv;charset=utf-8;",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `querymancer-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Release the object URL; without this the blob is held until reload.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    return button;
   }
 
   function buildTable(message) {

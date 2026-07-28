@@ -35,6 +35,9 @@ class Message:
     truncated: bool = False
     corrections: List[str] = field(default_factory=list)
     error: bool = False
+    # True when this answer was served from the cache rather than recomputed.
+    # Surfaced in the UI so a user can tell a fresh answer from a repeat.
+    cached: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +49,7 @@ class Message:
             "truncated": self.truncated,
             "corrections": self.corrections,
             "error": self.error,
+            "cached": self.cached,
         }
 
 

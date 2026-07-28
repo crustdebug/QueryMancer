@@ -135,6 +135,29 @@ class Config:
     # instead of hanging the app.
     REQUEST_TIMEOUT_SECONDS = 30
 
+    # Ceiling on a single SQL statement. A generated query can accidentally
+    # cross-join two large tables; without a limit the database works on it
+    # until it finishes, holding a pool connection the whole time. Enforced by
+    # the server where the engine supports it. Set to 0 to disable.
+    STATEMENT_TIMEOUT_SECONDS = 15
+
+    # --- Answer cache -----------------------------------------------------
+    # Repeating a question should not cost another set of LLM calls. Answers
+    # are cached per (question, database) for this long. Kept short because the
+    # underlying data changes: this is meant to absorb re-asks and refreshes,
+    # not to serve stale numbers hours later. Set to 0 to disable.
+    ANSWER_CACHE_TTL_SECONDS = 300
+    ANSWER_CACHE_MAX_ENTRIES = 256
+
+    # --- Schema pruning ---------------------------------------------------
+    # Above this many tables, inspect_database sends only the tables relevant
+    # to the question plus their foreign-key neighbours, rather than the whole
+    # list. Below it the full schema is cheap enough to send and pruning would
+    # only risk hiding something.
+    SCHEMA_PRUNE_THRESHOLD = 25
+    # Ceiling on the pruned set, so a question matching everything still fits.
+    MAX_FOCUSED_TABLES = 25
+
     # Agent loop limits. Each iteration is one LLM call, so this directly bounds
     # the request cost of a single user question.
     MAX_AGENT_ITERATIONS = 8

@@ -13,7 +13,7 @@ from langchain_core.messages import (
 
 from config import Config
 from custom_logging import green_border_style, log, log_panel
-from tools import call_tool
+from tools import call_tool, current_question
 
 SYSTEM_PROMPT = """
 You are QueryMancer, an expert SQL analyst. You turn natural-language questions into
@@ -144,33 +144,38 @@ def ask(
     # Work on a trimmed copy; tool traffic stays out of the durable history.
     messages: List[BaseMessage] = trim_history(history)
 
-    for iteration in range(max_iterations):
-        response = llm.invoke(messages)
-        messages.append(response)
+    # Bind the question for the whole loop so inspect_database can narrow a
+    # large schema down to the tables it plausibly concerns.
+    with current_question(query):
+        for iteration in range(max_iterations):
+            response = llm.invoke(messages)
+            messages.append(response)
 
-        tool_calls = getattr(response, "tool_calls", None)
-        if not tool_calls:
-            answer = extract_text(response.content)
-            history.append(AIMessage(content=answer))
-            return answer
+            tool_calls = getattr(response, "tool_calls", None)
+            if not tool_calls:
+                answer = extract_text(response.content)
+                history.append(AIMessage(content=answer))
+                return answer
 
-        for tool_call in tool_calls:
-            messages.append(call_tool(tool_call))
+            for tool_call in tool_calls:
+                messages.append(call_tool(tool_call))
 
-        log(f"[dim]Iteration {iteration + 1}/{max_iterations} complete.[/dim]")
+            log(f"[dim]Iteration {iteration + 1}/{max_iterations} complete.[/dim]")
 
-    # Out of iterations: ask for the best answer available from what we have,
-    # rather than failing outright and wasting the work already paid for.
-    log("[yellow]Iteration limit reached; requesting a final answer.[/yellow]")
-    messages.append(
-        HumanMessage(
-            content=(
-                "You have reached the tool-call limit. Answer now using only the "
-                "information gathered above. State clearly what remains uncertain."
+        # Out of iterations: ask for the best answer available from what we
+        # have, rather than failing outright and wasting the work already paid
+        # for.
+        log("[yellow]Iteration limit reached; requesting a final answer.[/yellow]")
+        messages.append(
+            HumanMessage(
+                content=(
+                    "You have reached the tool-call limit. Answer now using only the "
+                    "information gathered above. State clearly what remains uncertain."
+                )
             )
         )
-    )
-    final = llm.invoke(messages)
+        final = llm.invoke(messages)
+
     answer = extract_text(final.content)
     history.append(AIMessage(content=answer))
     return answer

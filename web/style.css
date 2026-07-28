@@ -879,6 +879,62 @@ body {
   white-space: nowrap;
 }
 
+/* KPI card - a single-cell result shown as a metric, not a 1x1 table */
+
+.kpi {
+  background: linear-gradient(
+    135deg,
+    oklch(0.97 0.02 255),
+    oklch(0.98 0.01 255)
+  );
+  border: 1px solid oklch(0.9 0.03 255);
+  border-radius: 12px;
+  padding: 22px 24px;
+  text-align: center;
+}
+
+.kpi-value {
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--accent-dark);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  word-break: break-word;
+}
+
+.kpi-label {
+  margin-top: 6px;
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Footer actions under an answer */
+
+/* The SQL disclosure lives here and expands to a full-width block when open,
+   so the footer wraps rather than forcing everything onto one line. The
+   disclosure takes the whole row once expanded. */
+.bubble-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.bubble-footer > div:has(.sql-block:not(.is-hidden)) { width: 100%; }
+
+.cached-badge {
+  font-size: var(--step--2);
+  font-weight: 600;
+  color: oklch(0.45 0.05 70);
+  background: oklch(0.96 0.03 90);
+  border-radius: 20px;
+  padding: 3px 10px;
+  margin-left: auto;
+  cursor: help;
+}
+
 /* SQL disclosure */
 
 .sql-toggle {

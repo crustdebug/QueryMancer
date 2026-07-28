@@ -16,6 +16,7 @@ Credential handling is deliberately strict:
 """
 
 import re
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from typing import Dict, List, Optional
@@ -23,6 +24,8 @@ from urllib.parse import quote_plus, urlparse
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+from config import Config
 
 # Engines the app understands, with the driver each one needs. `default_port`
 # is used to fill the form; `list_databases_sql` powers the "switch database"
@@ -252,6 +255,21 @@ def sanitize(message: str, settings: Optional[ConnectionSettings] = None) -> str
     return text_out
 
 
+def _sqlite_deadline(timeout: float):
+    """A SQLite progress handler that aborts the query past a deadline.
+
+    SQLite has no statement_timeout; returning non-zero from a progress
+    handler interrupts the running statement, which is the supported way to
+    bound one.
+    """
+    deadline = time.monotonic() + timeout
+
+    def handler() -> int:
+        return 1 if time.monotonic() > deadline else 0
+
+    return handler
+
+
 class DatabaseConnection:
     """A live connection to one database, with read-only enforcement.
 
@@ -261,12 +279,54 @@ class DatabaseConnection:
     an engine without a session-level guarantee is still protected.
     """
 
-    def __init__(self, settings: ConnectionSettings, connect_timeout: int = 10):
+    def __init__(
+        self,
+        settings: ConnectionSettings,
+        connect_timeout: int = 10,
+        statement_timeout: Optional[int] = None,
+    ):
         self.settings = settings
         self._engine: Optional[Engine] = None
         self._connect_timeout = connect_timeout
+        # Ceiling on a single statement. A model can write a query that
+        # accidentally cross-joins two large tables; without this the database
+        # works on it until it finishes or the pool is starved, and the user
+        # just sees the app hang.
+        self.statement_timeout = (
+            Config.STATEMENT_TIMEOUT_SECONDS if statement_timeout is None else statement_timeout
+        )
 
     # -- engine ----------------------------------------------------------
+
+    def connect_args(self) -> dict:
+        """Driver arguments for this connection, including the timeout.
+
+        Built separately from _build_engine so the arguments can be inspected
+        and tested without opening a connection: SQLAlchemy merges connect_args
+        into the driver call only at connect time, so they are not readable
+        back off a constructed Engine.
+        """
+        settings = self.settings
+        timeout = self.statement_timeout
+
+        if settings.engine == "sqlite":
+            return {"uri": True}
+
+        args: dict = {}
+        if settings.engine == "postgresql":
+            args["connect_timeout"] = self._connect_timeout
+            if timeout:
+                # Enforced by the server, so it still applies if the client
+                # goes away mid-query.
+                args["options"] = f"-c statement_timeout={int(timeout * 1000)}"
+        elif settings.engine == "mysql":
+            args["connect_timeout"] = self._connect_timeout
+            if timeout:
+                args["read_timeout"] = int(timeout)
+        elif settings.engine == "mssql":
+            if timeout:
+                args["timeout"] = int(timeout)
+        return args
 
     def _build_engine(self) -> Engine:
         settings = self.settings
@@ -275,14 +335,9 @@ class DatabaseConnection:
         if settings.engine == "sqlite":
             # 'mode=ro' makes the driver itself refuse writes.
             url = f"sqlite:///file:{settings.database}?mode=ro&uri=true"
-            return create_engine(url, connect_args={"uri": True}, **kwargs)
+            return create_engine(url, connect_args=self.connect_args(), **kwargs)
 
-        connect_args: dict = {}
-        if settings.engine == "postgresql":
-            connect_args["connect_timeout"] = self._connect_timeout
-        elif settings.engine == "mysql":
-            connect_args["connect_timeout"] = self._connect_timeout
-        return create_engine(settings.url(), connect_args=connect_args, **kwargs)
+        return create_engine(settings.url(), connect_args=self.connect_args(), **kwargs)
 
     @property
     def engine(self) -> Engine:
@@ -308,7 +363,39 @@ class DatabaseConnection:
                 # Some managed services disallow the statement. The SQL-level
                 # checks still stand, so continue rather than refusing to run.
                 pass
+
+        # SQLite takes its limit from the driver rather than a connect arg, and
+        # setting statement_timeout per session covers Postgres connections
+        # made through a pooler that drops the connect-time options string.
+        self._apply_statement_timeout(conn)
         return conn
+
+    def _apply_statement_timeout(self, conn) -> None:
+        """Best-effort per-session statement timeout."""
+        timeout = self.statement_timeout
+        if not timeout:
+            return
+        engine = self.settings.engine
+        try:
+            if engine == "postgresql":
+                conn.execute(text(f"SET statement_timeout = {int(timeout * 1000)}"))
+            elif engine == "sqlite":
+                # SQLAlchemy exposes the DBAPI connection; SQLite interrupts a
+                # long query through a progress handler rather than a setting.
+                raw = conn.connection.dbapi_connection
+                raw.set_progress_handler(_sqlite_deadline(timeout), 10_000)
+            elif engine == "mysql":
+                # MySQL 5.7.8+ / MariaDB use different names; try both.
+                try:
+                    conn.execute(
+                        text(f"SET SESSION max_execution_time = {int(timeout * 1000)}")
+                    )
+                except Exception:  # noqa: BLE001
+                    conn.execute(text(f"SET SESSION max_statement_time = {int(timeout)}"))
+        except Exception:  # noqa: BLE001
+            # A timeout we could not install is not a reason to refuse the
+            # query - the request-level ceiling still applies above this.
+            pass
 
     def run(self, sql: str, params: Optional[dict] = None, limit: Optional[int] = None):
         """Execute a read query, returning (columns, rows, truncated)."""

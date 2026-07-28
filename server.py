@@ -30,6 +30,8 @@ import session as session_module  # noqa: E402
 import suggestions as suggestions_module  # noqa: E402
 import tools  # noqa: E402
 from agent import ask, create_history  # noqa: E402
+from answer_cache import AnswerCache, CachedAnswer, database_identity  # noqa: E402
+from config import Config  # noqa: E402
 from connection import ENGINES, ConnectionSettings, sanitize  # noqa: E402
 from key_pool import PoolExhausted  # noqa: E402
 from models import RotatingChatModel  # noqa: E402
@@ -46,6 +48,14 @@ app = FastAPI(title="QueryMancer", docs_url=None, redoc_url=None)
 # rebuilding per request would forget which keys are rate-limited.
 _model: Optional[RotatingChatModel] = None
 _model_error: Optional[str] = None
+
+# Answers are cached per (question, database), not per session: two people
+# asking the same thing of the same database should not pay for it twice. The
+# key is a digest and carries no credentials - see answer_cache.py.
+_answer_cache = AnswerCache(
+    ttl_seconds=Config.ANSWER_CACHE_TTL_SECONDS,
+    max_entries=Config.ANSWER_CACHE_MAX_ENTRIES,
+)
 
 
 def get_model() -> RotatingChatModel:
@@ -302,9 +312,46 @@ async def ask_question(
 
     conversation.messages.append(Message(role="user", text=question))
 
-    # The agent is synchronous and does blocking network and database work, so
-    # run it off the event loop to keep the server responsive.
-    result = await asyncio.to_thread(_run_agent, session, conversation, question)
+    # A repeat of a question already answered against this database is served
+    # from the cache, skipping the agent loop entirely. Only asked at the start
+    # of a conversation: a follow-up depends on what was said before it, so the
+    # question text alone does not identify the answer.
+    identity = database_identity(session.connection.settings)
+    is_follow_up = len(conversation.messages) > 1
+    cached = None if is_follow_up else _answer_cache.get(question, identity)
+
+    if cached is not None:
+        log.info("Answer cache hit (age %.0fs)", cached.age())
+        result = Message(
+            role="assistant",
+            text=cached.text,
+            sql=cached.sql,
+            columns=list(cached.columns),
+            rows=[list(row) for row in cached.rows],
+            truncated=cached.truncated,
+            corrections=list(cached.corrections),
+            cached=True,
+        )
+        # The model never saw this exchange, so the conversation history must
+        # be told about it or a follow-up would refer to something missing.
+        conversation.history.extend(_history_pair(question, cached.text))
+    else:
+        # The agent is synchronous and does blocking network and database work,
+        # so run it off the event loop to keep the server responsive.
+        result = await asyncio.to_thread(_run_agent, session, conversation, question)
+        if not result.error and not is_follow_up:
+            _answer_cache.put(
+                question,
+                identity,
+                CachedAnswer(
+                    text=result.text,
+                    sql=result.sql,
+                    columns=list(result.columns),
+                    rows=[list(row) for row in result.rows],
+                    truncated=result.truncated,
+                    corrections=list(result.corrections),
+                ),
+            )
 
     conversation.messages.append(result)
     conversation.updated_at = time.time()
@@ -317,6 +364,13 @@ async def ask_question(
         "conversations": [c.summary() for c in session.ordered_conversations()],
     }
     return _session_response(payload_out, session, Response())
+
+
+def _history_pair(question: str, answer: str) -> list:
+    """The two messages a cached exchange must add to the model's history."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    return [HumanMessage(content=question), AIMessage(content=answer)]
 
 
 def _run_agent(session, conversation, question: str) -> Message:
@@ -376,6 +430,7 @@ def usage(querymancer_session: Optional[str] = Cookie(default=None)):
             "session": model.session_usage,
             "last": model.last_usage,
             "keys": model.pool_status(),
+            "cache": _answer_cache.stats(),
         },
         session,
         Response(),

@@ -149,6 +149,31 @@ def _record_query(entry: ExecutedQuery) -> None:
         queries.append(entry)
 
 
+# --- Question context -----------------------------------------------------
+#
+# inspect_database prunes the schema down to the tables relevant to what was
+# actually asked. The question is not a tool argument - the model would have to
+# restate it on every call, and could restate it wrongly - so it is bound to
+# the thread for the duration of the request, the same way the session is.
+
+_question_local = threading.local()
+
+
+@contextmanager
+def current_question(question: str):
+    """Bind the question being answered, for schema pruning."""
+    previous = getattr(_question_local, "question", None)
+    _question_local.question = question
+    try:
+        yield
+    finally:
+        _question_local.question = previous
+
+
+def get_current_question() -> str:
+    return getattr(_question_local, "question", None) or ""
+
+
 # --- Database connection --------------------------------------------------
 
 
@@ -228,7 +253,22 @@ def inspect_database(reasoning: str, refresh: bool = False) -> str:
 
     label = get_connection().settings.database or "(current)"
     parts = [f"Database '{label}' contains {len(db.tables)} table(s).", ""]
-    parts.append(db.overview())
+
+    # On a large schema, send only the tables this question plausibly needs
+    # plus whatever they are foreign-keyed to. Listing all 100+ tables costs
+    # tokens on every call and gives the model more opportunities to join the
+    # wrong one. Small schemas are sent whole - there is nothing to save.
+    focused = None
+    if len(db.tables) > Config.SCHEMA_PRUNE_THRESHOLD:
+        focused = db.focused_overview(
+            get_current_question(), max_tables=Config.MAX_FOCUSED_TABLES
+        )
+
+    if focused:
+        parts.append(focused)
+        return "\n".join(parts)
+
+    parts.append(db.overview(max_tables=Config.MAX_OVERVIEW_TABLES))
 
     if db.foreign_keys:
         parts.append("")

@@ -278,6 +278,148 @@ class DatabaseSchema:
             rendered += f"\n... and {len(ordered) - max_tables} more tables"
         return rendered
 
+    # -- context pruning -------------------------------------------------
+
+    def relevant_tables(
+        self,
+        question: str,
+        max_seeds: int = 8,
+        max_tables: int = 25,
+    ) -> List[Table]:
+        """Tables worth putting in the prompt for this question.
+
+        A large schema does not fit in a prompt, and padding one with 100
+        irrelevant tables both costs tokens and gives the model more chances to
+        join the wrong thing. This scores tables against the words in the
+        question, then pulls in whatever the winners are foreign-keyed to, so
+        the join targets a query actually needs come along even when the
+        question never names them ("revenue by customer" scores `orders` and
+        `customers`, and brings in `order_items` because `orders` points at it).
+
+        Returns tables in a sensible prompt order, largest first. An empty
+        result means nothing matched - callers should fall back to the full
+        overview rather than send the model an empty schema.
+        """
+        scored = self._score_tables(question)
+        if not scored:
+            return []
+
+        # Cap the seeds by max_tables too, not just max_seeds: a question that
+        # names more tables than the budget allows must still respect it,
+        # keeping the highest-scoring ones.
+        seeds = [table for _, table in scored[: min(max_seeds, max_tables)]]
+        chosen = {t.key: t for t in seeds}
+
+        # One hop along foreign keys, in either direction: a fact table and the
+        # dimension it references are both needed to answer a question about
+        # either of them.
+        for table in seeds:
+            if len(chosen) >= max_tables:
+                break
+            for neighbour in self.neighbours(table):
+                if neighbour.key not in chosen:
+                    chosen[neighbour.key] = neighbour
+                if len(chosen) >= max_tables:
+                    break
+
+        return sorted(
+            chosen.values(), key=lambda t: (-t.estimated_rows, t.name.lower())
+        )
+
+    def neighbours(self, table: Table) -> List[Table]:
+        """Tables directly related to this one by a foreign key, either way."""
+        name = table.name.lower()
+        found: Dict[str, Table] = {}
+        for fk in self.foreign_keys:
+            other_name = None
+            if fk.table.lower() == name:
+                other_name = fk.ref_table
+            elif fk.ref_table.lower() == name:
+                other_name = fk.table
+            if other_name is None:
+                continue
+            other = self.find_table(other_name)
+            if other is not None and other.key != table.key:
+                found[other.key] = other
+        return list(found.values())
+
+    def _score_tables(self, question: str) -> List[Tuple[float, Table]]:
+        """Rank tables by how well they match the words in the question."""
+        words = _keywords(question)
+        if not words:
+            return []
+
+        scored: List[Tuple[float, Table]] = []
+        for table in self.tables:
+            score = 0.0
+            table_words = _split_identifier(table.name)
+            for word in words:
+                # A table whose name contains a question word is the strongest
+                # signal available, so it outweighs any number of column hits.
+                if word in table_words:
+                    score += 10.0
+                elif any(word in tw or tw in word for tw in table_words if len(word) > 3):
+                    score += 4.0
+
+            # Column matches are weaker evidence but discriminate well between
+            # similarly named tables, and are capped so a wide table cannot win
+            # on breadth alone.
+            column_hits = 0
+            for column in table.columns:
+                column_words = _split_identifier(column.name)
+                if any(word in column_words for word in words):
+                    column_hits += 1
+            score += min(column_hits, 4) * 1.5
+
+            if score > 0:
+                # Break ties toward tables with data in them: an empty table is
+                # rarely what a question about the data is asking for.
+                scored.append((score + (0.5 if table.estimated_rows else 0.0), table))
+
+        scored.sort(key=lambda pair: (-pair[0], pair[1].name.lower()))
+        return scored
+
+    def focused_overview(self, question: str, max_tables: int = 25) -> Optional[str]:
+        """An overview of just the tables relevant to `question`.
+
+        None when the question matches nothing, so the caller can fall back to
+        the full overview instead of prompting with a misleadingly empty schema.
+        """
+        tables = self.relevant_tables(question, max_tables=max_tables)
+        if not tables:
+            return None
+
+        names = {t.name.lower() for t in tables}
+        lines = []
+        for table in tables:
+            columns = ", ".join(c.name for c in table.columns[:8])
+            if len(table.columns) > 8:
+                columns += f", +{len(table.columns) - 8} more"
+            size = f"~{table.estimated_rows:,} rows" if table.estimated_rows else "empty"
+            lines.append(f"{table.qualified} ({size}): {columns}")
+
+        related = [
+            fk
+            for fk in self.foreign_keys
+            if fk.table.lower() in names and fk.ref_table.lower() in names
+        ]
+        if related:
+            lines.append("")
+            lines.append("Foreign key relationships (use these for JOINs):")
+            lines.extend(f"  {fk.render()}" for fk in related[:40])
+
+        hidden = len(self.tables) - len(tables)
+        if hidden > 0:
+            # Say so explicitly: without this the model can conclude a table it
+            # needs does not exist, rather than asking for the full map.
+            lines.append("")
+            lines.append(
+                f"[Showing the {len(tables)} table(s) most relevant to this question; "
+                f"{hidden} other table(s) exist. Call inspect_database with "
+                f"refresh=false to see the full list if you need a different one.]"
+            )
+        return "\n".join(lines)
+
     def describe(self, table: Table) -> str:
         """Full column detail for one table, plus its relationships."""
         lines = [f"{table.qualified} (~{table.estimated_rows:,} rows)"]
@@ -296,6 +438,68 @@ class DatabaseSchema:
             lines.append("  relationships:")
             lines.extend(f"    {fk.render()}" for fk in related)
         return "\n".join(lines)
+
+
+# Words that carry no signal about which tables a question is about. Kept
+# deliberately small: an over-eager list would strip domain words that happen
+# to look generic ("order", "value", "count" are all real table names
+# somewhere), and a false negative here only costs a little prompt context
+# while a false positive can drop the table the question is actually about.
+_QUESTION_STOPWORDS = frozenset(
+    """
+    a an the and or but if of in on at to from by for with without into over
+    is are was were be been being do does did doing have has had having
+    i me my we our you your it its this that these those there here
+    what which who whom whose when where why how
+    show list give find get tell display return
+    all any some each every many much more most least less few
+    top bottom first last next previous recent latest oldest newest
+    please can could would should may might will shall
+    me us them him her his their
+    total number count sum average avg min max
+    per between during about across within than then
+    not no yes only just also very such same other another
+    group order sort filter limit rows row data database table tables
+    """.split()
+)
+
+
+def _split_identifier(identifier: str) -> set:
+    """The lower-cased words making up an identifier.
+
+    Handles all three conventions at once, so `customer_orders`,
+    `customerOrders` and `CustomerOrders` all yield {customer, orders}. The
+    whole identifier is included too, so a single-word name still matches.
+    """
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", identifier)
+    parts = {p for p in re.split(r"[^a-zA-Z0-9]+", spaced.lower()) if p}
+    parts.add(re.sub(r"[^a-z0-9]", "", identifier.lower()))
+    # Match singular against plural table names, which is the single most
+    # common mismatch between how people ask and how tables are named.
+    for part in list(parts):
+        if len(part) > 3 and part.endswith("s"):
+            parts.add(part[:-1])
+        else:
+            parts.add(part + "s")
+    return {p for p in parts if p}
+
+
+def _keywords(question: str) -> List[str]:
+    """The meaningful words in a question, for matching against identifiers."""
+    words = re.findall(r"[a-zA-Z][a-zA-Z0-9_]*", question.lower())
+    keep = []
+    seen = set()
+    for word in words:
+        if len(word) < 3 or word in _QUESTION_STOPWORDS or word in seen:
+            continue
+        seen.add(word)
+        keep.append(word)
+        # Also try the singular/plural counterpart, so "customers" in the
+        # question matches a table named "customer".
+        if len(word) > 3 and word.endswith("s") and word[:-1] not in seen:
+            seen.add(word[:-1])
+            keep.append(word[:-1])
+    return keep
 
 
 def _similarity(a: str, b: str) -> float:
