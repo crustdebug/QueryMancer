@@ -1,7 +1,7 @@
-streamlit>=1.44.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 python-dotenv>=1.1.0
 rich>=13.9.4
-pandas>=2.2.0
 
 # Database access. SQLAlchemy provides the dialect handling; each driver below
 # enables one engine. SQLite needs no driver (it ships with Python).
@@ -20,3 +20,4 @@ langchain-together>=0.3.0
 langchain-perplexity>=1.0.0
 
 pytest>=8.0.0
+httpx>=0.27.0

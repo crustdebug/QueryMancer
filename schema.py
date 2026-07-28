@@ -478,6 +478,18 @@ def _load_row_estimates(conn, engine_name: str, by_key: Dict[str, "Table"]) -> N
     }
     query = queries.get(engine_name)
     if not query:
+        # SQLite and others keep no row statistics. Counting is only safe here
+        # because such databases are small; a real COUNT(*) per table would be
+        # far too slow on a large PostgreSQL or MySQL instance.
+        if engine_name == "sqlite":
+            for table in by_key.values():
+                try:
+                    result = conn.execute(
+                        sa_text(f"SELECT count(*) FROM {table.qualified}")
+                    ).scalar()
+                    table.estimated_rows = int(result or 0)
+                except Exception:  # noqa: BLE001
+                    continue
         return
 
     try:

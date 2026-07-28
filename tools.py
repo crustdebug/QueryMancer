@@ -11,6 +11,9 @@ itself, not merely by a check here.
 """
 
 import re
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass, field as dc_field
 from typing import Any, List, Optional, Sequence
 
 from langchain_core.messages import ToolMessage
@@ -106,6 +109,44 @@ def check_read_only(sql_query: str) -> Optional[str]:
     if _WRITE_STATEMENT.search(stripped):
         return "Error: Data modification statements are not permitted."
     return None
+
+
+# --- Query trace ----------------------------------------------------------
+#
+# The UI shows the SQL the agent ran and renders its rows as a table, so each
+# successful query is recorded here for the caller to read afterwards. The
+# trace is thread-local: two requests handled concurrently must not see each
+# other's queries.
+
+_trace_local = threading.local()
+
+
+@dataclass
+class ExecutedQuery:
+    """One query the agent ran, with its result."""
+
+    sql: str
+    columns: List[str]
+    rows: List[tuple]
+    truncated: bool = False
+    corrections: List[str] = dc_field(default_factory=list)
+
+
+@contextmanager
+def capture_queries():
+    """Collect the queries run inside this block."""
+    previous = getattr(_trace_local, "queries", None)
+    _trace_local.queries = []
+    try:
+        yield _trace_local.queries
+    finally:
+        _trace_local.queries = previous
+
+
+def _record_query(entry: ExecutedQuery) -> None:
+    queries = getattr(_trace_local, "queries", None)
+    if queries is not None:
+        queries.append(entry)
 
 
 # --- Database connection --------------------------------------------------
@@ -284,12 +325,14 @@ def execute_sql(reasoning: str, sql_query: str) -> str:
         return blocked
 
     prefix = ""
+    corrections: List[str] = []
     try:
         db = get_schema()
         repair = repair_sql(sql_query, db)
         if repair.changed:
             log(f"[yellow]Rewrote query: {'; '.join(repair.corrections)}[/yellow]")
             prefix = repair.note() + "\n\n"
+            corrections = list(repair.corrections)
         sql_query = repair.sql
     except Exception as e:  # noqa: BLE001 - repair is best-effort
         log(f"[yellow]Could not repair query ({e}); running it unchanged.[/yellow]")
@@ -298,6 +341,17 @@ def execute_sql(reasoning: str, sql_query: str) -> str:
     try:
         columns, rows, clipped = get_connection().run(
             sql_query, limit=Config.MAX_SQL_RESULT_ROWS
+        )
+        # Record the query as actually executed, so the UI can show the real
+        # SQL and render the rows rather than re-parsing the text answer.
+        _record_query(
+            ExecutedQuery(
+                sql=sql_query,
+                columns=list(columns),
+                rows=[tuple(row) for row in rows],
+                truncated=clipped,
+                corrections=corrections,
+            )
         )
         result = format_rows(columns, rows)
         if clipped:

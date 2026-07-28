@@ -1,7 +1,7 @@
 [project]
-name = "querymancer"
-version = "0.2.0"
-description = "AI Agent that lets you talk to your database"
+name = "querio"
+version = "0.3.0"
+description = "Ask any SQL database questions in plain English"
 readme = "README.md"
 requires-python = ">=3.12"
 
@@ -13,13 +13,14 @@ dependencies = [
   "langchain-ollama>=0.3.0",
   "langchain-together>=0.3.0",
   "langchain-perplexity>=1.0.0",
+  "sqlalchemy>=2.0.0",
   "psycopg2-binary>=2.9.9",
-  "pandas>=2.2.0",
+  "pymysql>=1.1.0",
   "pydantic>=2.11.1",
   "python-dotenv>=1.1.0",
   "rich>=13.9.4",
-  "streamlit>=1.44.0",
-  "watchdog>=6.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
 ]
 
 [dependency-groups]

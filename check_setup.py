@@ -32,31 +32,33 @@ def check_database(url: str) -> bool:
     # summary masks the password, so this is safe to print.
     print(f"  target: {settings.summary}")
 
-    ok, message = session.connect(settings)
-    if not ok:
-        print(f"  FAILED: {sanitize(message, settings)}")
-        return False
-    print(f"  {message}")
+    # Connections belong to a session, so make one for this command-line run.
+    with session.use_session(session.store.create()):
+        ok, message = session.connect(settings)
+        if not ok:
+            print(f"  FAILED: {sanitize(message, settings)}")
+            return False
+        print(f"  {message}")
 
-    try:
-        from tools import get_schema
+        try:
+            from tools import get_schema
 
-        db = get_schema(refresh=True)
-    except Exception as error:  # noqa: BLE001
-        print(f"  schema introspection FAILED: {sanitize(error, settings)}")
-        return False
+            db = get_schema(refresh=True)
+        except Exception as error:  # noqa: BLE001
+            print(f"  schema introspection FAILED: {sanitize(error, settings)}")
+            return False
 
-    populated = [t for t in db.tables if t.estimated_rows > 0]
-    print(f"  agent sees {len(db.tables)} readable table(s) across "
-          f"{len({t.schema for t in db.tables})} schema(s)")
-    print(f"  {len(db.foreign_keys)} foreign key(s) available for joins")
-    if populated:
-        largest = max(populated, key=lambda t: t.estimated_rows)
-        print(f"  largest table: {largest.qualified} (~{largest.estimated_rows:,} rows)")
-    else:
-        print("  note: every table appears empty, or the engine reports no")
-        print("        statistics. On PostgreSQL, run ANALYZE; to refresh them.")
-    return True
+        populated = [t for t in db.tables if t.estimated_rows > 0]
+        print(f"  agent sees {len(db.tables)} readable table(s) across "
+              f"{len({t.schema for t in db.tables})} schema(s)")
+        print(f"  {len(db.foreign_keys)} foreign key(s) available for joins")
+        if populated:
+            largest = max(populated, key=lambda t: t.estimated_rows)
+            print(f"  largest table: {largest.qualified} (~{largest.estimated_rows:,} rows)")
+        else:
+            print("  note: every table appears empty, or the engine reports no")
+            print("        statistics. On PostgreSQL, run ANALYZE; to refresh them.")
+        return True
 
 
 def check_keys() -> bool:
@@ -117,7 +119,7 @@ if __name__ == "__main__":
 
     print()
     if db_ok and call_ok:
-        print("Ready. Run: streamlit run app.py")
+        print("Ready. Run: python -m uvicorn server:app")
         sys.exit(0)
     print("Setup is incomplete - see the messages above.")
     sys.exit(1)

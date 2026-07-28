@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Querio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">Q</div>
+      <div class="brand-name">Querio</div>
+    </div>
+
+    <div class="sidebar-connection">
+      <div id="conn-card" class="conn-card is-hidden">
+        <div class="conn-card-head">
+          <span class="dot dot-live"></span>
+          <span id="conn-name" class="conn-name"></span>
+        </div>
+        <div id="conn-meta" class="conn-meta"></div>
+        <button id="btn-change-connection" class="link-button" type="button">Change connection</button>
+      </div>
+
+      <div id="conn-empty" class="conn-empty">
+        <div class="conn-empty-title">No database connected</div>
+        <div class="conn-empty-sub">Attach one to start asking questions</div>
+      </div>
+    </div>
+
+    <div id="sidebar-conversations" class="is-hidden">
+      <div class="sidebar-actions">
+        <button id="btn-new-question" class="primary-button" type="button">+ New question</button>
+      </div>
+      <div class="sidebar-label">RECENT QUESTIONS</div>
+      <div id="history-list" class="history-list"></div>
+    </div>
+
+    <div id="schema-panel" class="schema-panel is-hidden">
+      <button id="btn-toggle-schema" class="schema-toggle" type="button">
+        <span id="schema-count">Tables</span>
+        <span class="chevron">▾</span>
+      </button>
+      <div id="schema-tables" class="schema-tables is-hidden"></div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <header class="topbar">
+      <div id="header-title" class="header-title">Querio</div>
+      <div id="header-badge" class="badge is-hidden">
+        <span class="dot dot-live"></span>
+        <span id="badge-text"></span>
+      </div>
+    </header>
+
+    <!-- Empty state: choose a database -->
+    <section id="view-connect" class="view-connect">
+      <div class="hero-mark">DB</div>
+      <div class="hero-copy">
+        <h1>Connect your database to get started</h1>
+        <p>Attach a database and start asking questions in plain English. Querio writes and runs the queries for you.</p>
+      </div>
+      <div id="engine-grid" class="engine-grid"></div>
+      <button id="btn-use-url" class="link-button muted" type="button">Or paste a connection string</button>
+    </section>
+
+    <!-- Chat -->
+    <section id="view-chat" class="view-chat is-hidden">
+      <div id="chat-scroll" class="chat-scroll">
+        <div id="suggestions" class="suggestions is-hidden">
+          <div class="suggestions-title">Ask a question about your data</div>
+          <div id="suggestion-list" class="suggestion-list"></div>
+        </div>
+        <div id="messages" class="messages"></div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-row">
+          <textarea id="input" rows="1" placeholder="Ask a question about your data..."></textarea>
+          <button id="btn-send" class="primary-button send" type="button" disabled>Send</button>
+        </div>
+        <div class="composer-hint">Press Enter to send · Shift+Enter for a new line</div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Connect modal -->
+<div id="modal" class="modal-backdrop is-hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <div id="modal-mark" class="modal-mark">Pg</div>
+      <div id="modal-title" class="modal-title">Connect to PostgreSQL</div>
+    </div>
+
+    <form id="connect-form" autocomplete="off">
+      <!-- Field-based connection -->
+      <div id="fields-standard">
+        <div class="field-row">
+          <div class="field grow2">
+            <label for="f-host">Host</label>
+            <input id="f-host" name="host" placeholder="db.company.com" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="f-port">Port</label>
+            <input id="f-port" name="port" placeholder="5432" inputmode="numeric" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="f-database">Database name</label>
+          <input id="f-database" name="database" placeholder="production_db" autocomplete="off">
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="f-username">Username</label>
+            <input id="f-username" name="username" placeholder="readonly_user" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="f-password">Password</label>
+            <input id="f-password" name="password" type="password" placeholder="••••••••" autocomplete="new-password">
+          </div>
+        </div>
+      </div>
+
+      <!-- SQLite: a file path -->
+      <div id="fields-sqlite" class="is-hidden">
+        <div class="field">
+          <label for="f-sqlite-path">Database file</label>
+          <input id="f-sqlite-path" name="sqlitePath" placeholder="C:\path\to\database.db" autocomplete="off">
+        </div>
+      </div>
+
+      <!-- Connection string -->
+      <div id="fields-url" class="is-hidden">
+        <div class="field">
+          <label for="f-url">Connection string</label>
+          <input id="f-url" name="url" type="password" placeholder="postgresql://user:password@host:5432/database" autocomplete="new-password">
+          <div class="field-help">Supported: postgresql:// · mysql:// · sqlite:///path.db · mssql:// · oracle://</div>
+        </div>
+      </div>
+
+      <div id="modal-error" class="modal-error is-hidden"></div>
+
+      <div class="modal-note">Querio connects read-only and never modifies your data. Your credentials stay in this session and are never written to disk.</div>
+
+      <div class="modal-actions">
+        <button id="btn-toggle-url" class="ghost-button" type="button">Use connection string</button>
+        <div class="spacer"></div>
+        <button id="btn-cancel" class="ghost-button" type="button">Cancel</button>
+        <button id="btn-connect" class="primary-button" type="submit">Connect</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

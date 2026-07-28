@@ -1,10 +1,10 @@
-# Querymancer: SQL AI Agent
+# Querio: SQL AI Agent
 
 Ask questions about your database in plain English. An LLM agent explores the
-schema with read-only tools, writes the SQL itself, runs it, and answers in
-Markdown.
+schema with read-only tools, writes the SQL itself, runs it, and answers with
+the results — plus the exact query it ran, so you can check its work.
 
-Connect **any** database from the sidebar — PostgreSQL, MySQL/MariaDB, SQLite,
+Connect **any** database from the app — PostgreSQL, MySQL/MariaDB, SQLite,
 SQL Server or Oracle — with a form or a connection string. The schema is
 discovered at runtime, so nothing about your tables is hardcoded and there is
 no configuration file to maintain.
@@ -17,10 +17,31 @@ python -m venv .venv
 pip install -r requirements.txt
 
 cp .env.example .env          # add your API key(s) - no database details needed
-streamlit run app.py
+python -m uvicorn server:app  # then open http://127.0.0.1:8000
 ```
 
-Then open the sidebar and connect your database. Only API keys go in `.env`.
+Then connect your database in the browser. Only API keys go in `.env`.
+
+Add `--reload` while developing, or `--host 0.0.0.0 --port 8000` to expose it
+on your network.
+
+## The interface
+
+A single-page app served by the FastAPI backend — no build step, no npm.
+
+- **Pick a database** from the start screen, then enter details or paste a
+  connection string.
+- **Ask in plain English.** Answers arrive as formatted text, with results
+  rendered as a real table and a bar chart when the shape suits it.
+- **View SQL** under each answer shows the exact query that ran, including any
+  names Querio corrected for you.
+- **Recent questions** in the sidebar keeps each conversation; follow-up
+  questions stay in context.
+- **Starter questions** are generated from your actual tables and columns, not
+  hardcoded, so they name things that really exist.
+
+The layout follows the design in [ui/Querio.dc.html](ui/Querio.dc.html); that
+file is the original mock and is not used at runtime.
 
 To check your keys work before starting:
 
@@ -31,8 +52,8 @@ python check_setup.py postgresql://user:password@host:5432/db   # also test a da
 
 ## Connecting your database
 
-Open the sidebar, choose your database type, and either fill in the fields or
-paste a connection string:
+Choose your database type on the start screen, then either fill in the fields
+or paste a connection string:
 
 | Engine | Connection string | Driver needed |
 |---|---|---|

@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;padding:0;height:100%;}
+  * { box-sizing: border-box; }
+  @keyframes qspin { to { transform: rotate(360deg); } }
+  @keyframes qpulse { 0%,80%,100%{ opacity:0.25; transform:scale(0.7);} 40%{ opacity:1; transform:scale(1);} }
+  @keyframes qfade { from { opacity:0; transform:translateY(6px);} to { opacity:1; transform:translateY(0);} }
+  textarea::placeholder { color: oklch(0.6 0.01 245); }
+  textarea:focus, input:focus { outline: none; }
+</style>
+</helmet>
+<div style="display:flex;height:100vh;width:100%;overflow:hidden;font-family:'IBM Plex Sans',system-ui,-apple-system,sans-serif;background:oklch(0.98 0.004 240);color:oklch(0.24 0.02 245)">
+
+  <div style="width:272px;flex-shrink:0;background:oklch(0.19 0.02 250);border-right:1px solid oklch(0.28 0.02 250);display:flex;flex-direction:column;color:oklch(0.85 0.01 250)">
+
+    <div style="display:flex;align-items:center;gap:10px;padding:20px 20px 18px">
+      <div style="width:28px;height:28px;border-radius:8px;background:oklch(0.5 0.14 255);display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:14px;flex-shrink:0">Q</div>
+      <div style="font-size:16px;font-weight:600;color:white;letter-spacing:-0.01em">Querio</div>
+    </div>
+
+    <div style="padding:0 16px 16px">
+      <sc-if value="{{ connected }}" hint-placeholder-val="{{ false }}">
+        <div style="background:oklch(0.24 0.02 250);border:1px solid oklch(0.3 0.02 250);border-radius:10px;padding:12px 14px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <div style="width:7px;height:7px;border-radius:50%;background:oklch(0.7 0.16 150);flex-shrink:0"></div>
+            <div style="font-size:13px;font-weight:600;color:white">{{ connectionName }}</div>
+          </div>
+          <div style="font-size:12px;color:oklch(0.6 0.02 250);margin-bottom:8px">{{ connectionTypeLabel }} &middot; connected</div>
+          <button onClick="{{ disconnectDb }}" style="background:none;border:none;color:oklch(0.68 0.02 250);font-size:12px;font-family:inherit;cursor:pointer;padding:0;text-decoration:underline" style-hover="color:white">Change connection</button>
+        </div>
+      </sc-if>
+      <sc-if value="{{ notConnected }}" hint-placeholder-val="{{ true }}">
+        <div style="border:1px dashed oklch(0.35 0.02 250);border-radius:10px;padding:12px 14px">
+          <div style="font-size:13px;font-weight:600;color:oklch(0.85 0.01 250);margin-bottom:2px">No database connected</div>
+          <div style="font-size:12px;color:oklch(0.58 0.02 250)">Attach one to start asking questions</div>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ connected }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:0 16px 14px">
+        <button onClick="{{ newConversation }}" style="width:100%;background:oklch(0.5 0.14 255);color:white;border:none;border-radius:8px;padding:10px 12px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer" style-hover="background:oklch(0.44 0.14 255)">+ New question</button>
+      </div>
+      <div style="padding:0 20px 8px;font-size:11px;font-weight:600;letter-spacing:0.06em;color:oklch(0.5 0.02 250)">RECENT QUESTIONS</div>
+      <div style="flex:1;overflow-y:auto;padding:0 10px 12px;display:flex;flex-direction:column;gap:2px">
+        <sc-for list="{{ historyList }}" as="item" hint-placeholder-count="3">
+          <button onClick="{{ item.select }}" style="{{ item.rowStyle }}" style-hover="background:oklch(0.25 0.02 250)">
+            <div style="font-size:13px;font-weight:500;color:oklch(0.9 0.01 250);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ item.title }}</div>
+            <div style="font-size:11.5px;color:oklch(0.55 0.02 250);margin-top:2px">{{ item.time }}</div>
+          </button>
+        </sc-for>
+      </div>
+    </sc-if>
+
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:oklch(0.98 0.004 240)">
+
+    <div style="height:60px;flex-shrink:0;border-bottom:1px solid oklch(0.89 0.006 240);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:white">
+      <div style="font-size:15px;font-weight:600;color:oklch(0.24 0.02 245)">{{ headerTitle }}</div>
+      <sc-if value="{{ connected }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:8px;background:oklch(0.95 0.01 250);border-radius:20px;padding:6px 12px">
+          <div style="width:6px;height:6px;border-radius:50%;background:oklch(0.65 0.15 150)"></div>
+          <div style="font-size:12.5px;font-weight:500;color:oklch(0.4 0.02 250)">{{ connectionTypeLabel }} &middot; {{ connectionName }}</div>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ notConnected }}" hint-placeholder-val="{{ true }}">
+      <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:40px;overflow-y:auto">
+        <div style="width:64px;height:64px;border-radius:16px;background:oklch(0.94 0.03 255);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:oklch(0.5 0.14 255)">DB</div>
+        <div style="text-align:center;max-width:440px">
+          <div style="font-size:23px;font-weight:600;margin-bottom:8px;letter-spacing:-0.01em">Connect your database to get started</div>
+          <div style="font-size:15px;color:oklch(0.52 0.016 245);line-height:1.5">Attach a database and start asking questions in plain English. Querio writes and runs the queries for you.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,148px);gap:12px;margin-top:8px">
+          <sc-for list="{{ dbTypes }}" as="item" hint-placeholder-count="6">
+            <button onClick="{{ item.select }}" style="display:flex;flex-direction:column;align-items:center;padding:18px 10px;background:white;border:1px solid oklch(0.89 0.006 240);border-radius:12px;cursor:pointer;font-family:inherit" style-hover="border-color:oklch(0.5 0.14 255);box-shadow:0 2px 10px rgba(20,30,60,0.06)">
+              <div style="width:40px;height:40px;border-radius:10px;background:{{ item.color }};display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:13px">{{ item.initials }}</div>
+              <div style="font-size:13px;font-weight:500;margin-top:10px;color:oklch(0.3 0.02 245)">{{ item.name }}</div>
+            </button>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ connected }}" hint-placeholder-val="{{ false }}">
+      <div ref="{{ chatRef }}" style="flex:1;overflow-y:auto;padding:24px 28px 8px;display:flex;flex-direction:column;gap:18px">
+
+        <sc-if value="{{ showSuggestions }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:20px">
+            <div style="font-size:17px;font-weight:600;color:oklch(0.35 0.02 245)">Ask a question about your data</div>
+            <div style="display:flex;flex-direction:column;gap:8px;width:100%;max-width:420px">
+              <sc-for list="{{ suggestions }}" as="item" hint-placeholder-count="3">
+                <button onClick="{{ item.run }}" style="text-align:left;background:white;border:1px solid oklch(0.89 0.006 240);border-radius:10px;padding:12px 14px;font-size:13.5px;font-family:inherit;color:oklch(0.35 0.02 245);cursor:pointer" style-hover="border-color:oklch(0.5 0.14 255);color:oklch(0.5 0.14 255)">{{ item.text }}</button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-for list="{{ messages }}" as="m" hint-placeholder-count="0">
+          <sc-if value="{{ m.isUser }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;justify-content:flex-end;animation:qfade 0.25s ease">
+              <div style="max-width:70%;background:oklch(0.5 0.14 255);color:white;padding:11px 16px;border-radius:14px 14px 3px 14px;font-size:14.5px;line-height:1.5">{{ m.text }}</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ m.isAssistant }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;justify-content:flex-start;animation:qfade 0.25s ease">
+              <div style="max-width:80%;background:white;border:1px solid oklch(0.9 0.006 240);border-radius:3px 14px 14px 14px;padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+                <div style="font-size:14.5px;line-height:1.55;color:oklch(0.26 0.02 245)">{{ m.text }}</div>
+
+                <sc-if value="{{ m.hasChart }}" hint-placeholder-val="{{ false }}">
+                  <div style="display:flex;align-items:flex-end;gap:16px;height:110px;padding:8px 4px 0">
+                    <sc-for list="{{ m.chartBars }}" as="bar" hint-placeholder-count="3">
+                      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1">
+                        <div style="font-size:11.5px;color:oklch(0.5 0.016 245);font-weight:600">{{ bar.valueLabel }}</div>
+                        <div style="width:100%;max-width:44px;background:oklch(0.5 0.14 255 / 0.85);border-radius:5px 5px 2px 2px;height:{{ bar.height }}"></div>
+                        <div style="font-size:11.5px;color:oklch(0.55 0.016 245)">{{ bar.label }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.hasTable }}" hint-placeholder-val="{{ false }}">
+                  <div style="border:1px solid oklch(0.91 0.006 240);border-radius:8px;overflow:hidden">
+                    <table style="border-collapse:collapse;width:100%;font-size:13px">
+                      <thead>
+                        <tr style="background:oklch(0.96 0.006 240)">
+                          <sc-for list="{{ m.columns }}" as="col" hint-placeholder-count="2">
+                            <th style="text-align:left;padding:8px 12px;font-weight:600;color:oklch(0.4 0.016 245);border-bottom:1px solid oklch(0.91 0.006 240)">{{ col }}</th>
+                          </sc-for>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <sc-for list="{{ m.rows }}" as="row" hint-placeholder-count="2">
+                          <tr style-hover="background:oklch(0.985 0.004 240)">
+                            <sc-for list="{{ row.cells }}" as="cell" hint-placeholder-count="2">
+                              <td style="padding:8px 12px;color:oklch(0.3 0.02 245);border-top:1px solid oklch(0.94 0.006 240);font-variant-numeric:tabular-nums">{{ cell }}</td>
+                            </sc-for>
+                          </tr>
+                        </sc-for>
+                      </tbody>
+                    </table>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ m.hasSql }}" hint-placeholder-val="{{ false }}">
+                  <div>
+                    <button onClick="{{ m.toggleSql }}" style="background:none;border:none;padding:0;font-size:12.5px;font-weight:600;color:oklch(0.5 0.14 255);cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:5px">{{ m.sqlToggleLabel }}</button>
+                    <sc-if value="{{ m.sqlExpanded }}" hint-placeholder-val="{{ false }}">
+                      <pre style="margin:8px 0 0;background:oklch(0.19 0.02 250);color:oklch(0.85 0.03 150);padding:12px 14px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.6;overflow-x:auto;white-space:pre-wrap">{{ m.sql }}</pre>
+                    </sc-if>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+          </sc-if>
+        </sc-for>
+
+        <sc-if value="{{ thinking }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;justify-content:flex-start">
+            <div style="background:white;border:1px solid oklch(0.9 0.006 240);border-radius:3px 14px 14px 14px;padding:14px 18px;display:flex;gap:5px;align-items:center">
+              <div style="width:6px;height:6px;border-radius:50%;background:oklch(0.5 0.14 255);animation:qpulse 1.1s infinite ease-in-out"></div>
+              <div style="width:6px;height:6px;border-radius:50%;background:oklch(0.5 0.14 255);animation:qpulse 1.1s infinite ease-in-out 0.15s"></div>
+              <div style="width:6px;height:6px;border-radius:50%;background:oklch(0.5 0.14 255);animation:qpulse 1.1s infinite ease-in-out 0.3s"></div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="flex-shrink:0;border-top:1px solid oklch(0.89 0.006 240);background:white;padding:14px 28px 16px">
+        <div style="display:flex;gap:10px;align-items:flex-end;max-width:900px">
+          <textarea value="{{ input }}" onChange="{{ onInputChange }}" onKeyDown="{{ handleKeyDown }}" placeholder="Ask a question about your data..." rows="1" style="flex:1;resize:none;border:1px solid oklch(0.87 0.006 240);border-radius:10px;padding:11px 14px;font-family:inherit;font-size:14px;color:oklch(0.26 0.02 245);background:oklch(0.99 0.002 240);line-height:1.4" style-focus="border-color:oklch(0.5 0.14 255)"></textarea>
+          <button onClick="{{ sendMessage }}" style="{{ sendBtnStyle }}">Send</button>
+        </div>
+        <div style="font-size:11.5px;color:oklch(0.6 0.016 245);margin-top:6px">Press Enter to send &middot; Shift+Enter for a new line</div>
+      </div>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{ showConnectModal }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;background:oklch(0.15 0.02 250 / 0.55);display:flex;align-items:center;justify-content:center;z-index:50;animation:qfade 0.15s ease">
+      <div style="width:440px;max-width:90vw;background:white;border-radius:14px;padding:26px;display:flex;flex-direction:column;gap:16px;box-shadow:0 24px 70px rgba(10,15,35,0.3)">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:38px;height:38px;border-radius:9px;background:{{ connectingMetaColor }};display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:13px;flex-shrink:0">{{ connectingMetaInitials }}</div>
+          <div style="font-size:16px;font-weight:600">Connect to {{ connectingMetaName }}</div>
+        </div>
+
+        <div style="display:flex;gap:10px">
+          <div style="flex:2">
+            <div style="font-size:12.5px;font-weight:600;color:oklch(0.4 0.016 245);margin-bottom:5px">Host</div>
+            <input value="{{ form.host }}" onChange="{{ onHostChange }}" placeholder="db.company.com" style="width:100%;border:1px solid {{ hostBorderColor }};border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13.5px" />
+            <sc-if value="{{ hostError }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:oklch(0.55 0.18 25);margin-top:4px">{{ hostError }}</div></sc-if>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:12.5px;font-weight:600;color:oklch(0.4 0.016 245);margin-bottom:5px">Port</div>
+            <input value="{{ form.port }}" onChange="{{ onPortChange }}" placeholder="5432" style="width:100%;border:1px solid oklch(0.87 0.006 240);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13.5px" />
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:12.5px;font-weight:600;color:oklch(0.4 0.016 245);margin-bottom:5px">Database name</div>
+          <input value="{{ form.database }}" onChange="{{ onDatabaseChange }}" placeholder="production_db" style="width:100%;border:1px solid {{ databaseBorderColor }};border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13.5px" />
+          <sc-if value="{{ databaseError }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:oklch(0.55 0.18 25);margin-top:4px">{{ databaseError }}</div></sc-if>
+        </div>
+
+        <div style="display:flex;gap:10px">
+          <div style="flex:1">
+            <div style="font-size:12.5px;font-weight:600;color:oklch(0.4 0.016 245);margin-bottom:5px">Username</div>
+            <input value="{{ form.username }}" onChange="{{ onUsernameChange }}" placeholder="readonly_user" style="width:100%;border:1px solid oklch(0.87 0.006 240);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13.5px" />
+          </div>
+          <div style="flex:1">
+            <div style="font-size:12.5px;font-weight:600;color:oklch(0.4 0.016 245);margin-bottom:5px">Password</div>
+            <input type="password" value="{{ form.password }}" onChange="{{ onPasswordChange }}" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" style="width:100%;border:1px solid oklch(0.87 0.006 240);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:13.5px" />
+          </div>
+        </div>
+
+        <div style="font-size:12px;color:oklch(0.55 0.016 245);background:oklch(0.96 0.006 240);border-radius:8px;padding:10px 12px">Querio connects read-only and never modifies your data.</div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:4px">
+          <button onClick="{{ closeModal }}" style="background:none;border:1px solid oklch(0.87 0.006 240);color:oklch(0.35 0.02 245);border-radius:8px;padding:9px 16px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer">Cancel</button>
+          <button onClick="{{ submitConnect }}" style="{{ connectBtnStyle }}">
+            <sc-if value="{{ connecting }}" hint-placeholder-val="{{ false }}">
+              <span style="display:inline-flex;align-items:center;gap:8px"><span style="width:13px;height:13px;border-radius:50%;border:2px solid rgba(255,255,255,0.4);border-top-color:white;animation:qspin 0.7s linear infinite"></span>Connecting&hellip;</span>
+            </sc-if>
+            <sc-if value="{{ notConnecting }}" hint-placeholder-val="{{ true }}">Connect</sc-if>
+          </button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+
+class Component extends DCLogic {
+  dbTypesRaw = [
+    { id: 'postgres', name: 'PostgreSQL', initials: 'Pg', color: 'oklch(0.5 0.14 255)' },
+    { id: 'mysql', name: 'MySQL', initials: 'My', color: 'oklch(0.6 0.14 55)' },
+    { id: 'mssql', name: 'SQL Server', initials: 'MS', color: 'oklch(0.55 0.18 25)' },
+    { id: 'sqlite', name: 'SQLite', initials: 'Sq', color: 'oklch(0.5 0.01 250)' },
+    { id: 'bigquery', name: 'BigQuery', initials: 'BQ', color: 'oklch(0.55 0.14 230)' },
+    { id: 'snowflake', name: 'Snowflake', initials: 'Sf', color: 'oklch(0.62 0.12 200)' },
+  ];
+
+  cannedSets = {
+    sales: {
+      text: "Total sales last quarter (Q2 2026) were $482,300 \u2014 up 12% from Q1. June was the strongest month.",
+      sql: "SELECT SUM(amount) AS total_sales\nFROM orders\nWHERE order_date BETWEEN '2026-04-01' AND '2026-06-30';",
+      table: { columns: ['Metric', 'Value'], rows: [['Total sales', '$482,300'], ['Change vs. Q1', '+12%']] },
+      chart: [{ label: 'Apr', value: 138200 }, { label: 'May', value: 152800 }, { label: 'Jun', value: 191300 }],
+    },
+    customers: {
+      text: "Here are your top 5 customers by total revenue this year.",
+      sql: "SELECT customer_name, SUM(amount) AS revenue\nFROM orders\nGROUP BY customer_name\nORDER BY revenue DESC\nLIMIT 5;",
+      table: { columns: ['Customer', 'Revenue'], rows: [['Acme Corp', '$94,200'], ['Bluewave Retail', '$81,750'], ['Horizon Foods', '$76,300'], ['Delta Logistics', '$68,900'], ['Summit Health', '$61,150']] },
+      chart: null,
+    },
+    cancelled: {
+      text: "There were 27 cancelled orders this month \u2014 about 3.4% of total orders placed.",
+      sql: "SELECT COUNT(*) AS cancelled_orders\nFROM orders\nWHERE status = 'cancelled'\nAND order_date >= date_trunc('month', current_date);",
+      table: { columns: ['Metric', 'Value'], rows: [['Cancelled orders', '27'], ['% of total orders', '3.4%']] },
+      chart: null,
+    },
+    generic: {
+      text: "Here are the 5 most recent orders in your database.",
+      sql: "SELECT order_id, customer_name, amount, status\nFROM orders\nORDER BY order_date DESC\nLIMIT 5;",
+      table: { columns: ['Order ID', 'Customer', 'Amount', 'Status'], rows: [['#10482', 'Acme Corp', '$2,140', 'Fulfilled'], ['#10481', 'Bluewave Retail', '$860', 'Fulfilled'], ['#10480', 'Horizon Foods', '$4,920', 'Pending'], ['#10479', 'Delta Logistics', '$1,375', 'Fulfilled'], ['#10478', 'Summit Health', '$690', 'Cancelled']] },
+      chart: null,
+    },
+  };
+
+  state = {
+    connection: null,
+    showConnectModal: false,
+    connectingDbType: null,
+    connecting: false,
+    form: { host: '', port: '', database: '', username: '', password: '' },
+    formErrors: {},
+    conversations: {},
+    order: [],
+    activeId: null,
+    input: '',
+    thinking: false,
+    expandedSql: {},
+  };
+
+  chatRef = React.createRef();
+
+  componentDidUpdate() {
+    if (this.chatRef.current) this.chatRef.current.scrollTop = this.chatRef.current.scrollHeight;
+  }
+
+  buildSeedConversations() {
+    const c = this.cannedSets;
+    return [
+      { id: 'h1', title: 'Total sales last quarter', time: 'Today \u00b7 2:14 PM', messages: [
+        { role: 'user', text: 'What were total sales last quarter?' },
+        { role: 'assistant', text: c.sales.text, sql: c.sales.sql, table: c.sales.table, chart: c.sales.chart },
+      ]},
+      { id: 'h2', title: 'Top 5 customers by revenue', time: 'Today \u00b7 11:03 AM', messages: [
+        { role: 'user', text: 'Who are our top 5 customers by revenue?' },
+        { role: 'assistant', text: c.customers.text, sql: c.customers.sql, table: c.customers.table, chart: null },
+      ]},
+      { id: 'h3', title: 'Cancelled orders this month', time: 'Yesterday \u00b7 4:47 PM', messages: [
+        { role: 'user', text: 'How many orders were cancelled this month?' },
+        { role: 'assistant', text: c.cancelled.text, sql: c.cancelled.sql, table: c.cancelled.table, chart: null },
+      ]},
+    ];
+  }
+
+  selectDbType = (id) => this.setState({ showConnectModal: true, connectingDbType: id, formErrors: {} });
+
+  closeModal = () => this.setState({ showConnectModal: false, connectingDbType: null, form: { host: '', port: '', database: '', username: '', password: '' }, formErrors: {} });
+
+  updateForm = (field, value) => this.setState(s => ({ form: { ...s.form, [field]: value } }));
+
+  submitConnect = () => {
+    const { form } = this.state;
+    const errors = {};
+    if (!form.host.trim()) errors.host = 'Host is required';
+    if (!form.database.trim()) errors.database = 'Database name is required';
+    if (Object.keys(errors).length) { this.setState({ formErrors: errors }); return; }
+    this.setState({ connecting: true, formErrors: {} });
+    setTimeout(() => {
+      const seeds = this.buildSeedConversations();
+      const conversations = {};
+      seeds.forEach(cv => { conversations[cv.id] = cv; });
+      this.setState({
+        connecting: false,
+        showConnectModal: false,
+        connection: { type: this.state.connectingDbType, name: this.state.form.database },
+        conversations,
+        order: seeds.map(cv => cv.id),
+        activeId: null,
+        connectingDbType: null,
+      });
+    }, 1100);
+  };
+
+  disconnectDb = () => this.setState({ connection: null, conversations: {}, order: [], activeId: null });
+
+  newConversation = () => {
+    const id = 'c' + Date.now();
+    this.setState(s => ({
+      conversations: { ...s.conversations, [id]: { id, title: 'New conversation', time: 'Just now', messages: [] } },
+      activeId: id,
+    }));
+  };
+
+  updateInput = (v) => this.setState({ input: v });
+
+  handleKeyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendMessage(); } };
+
+  matchDataset(text) {
+    const t = text.toLowerCase();
+    if (t.includes('customer')) return 'customers';
+    if (t.includes('cancel')) return 'cancelled';
+    if (t.includes('sale') || t.includes('revenue')) return 'sales';
+    return 'generic';
+  }
+
+  sendMessage = () => {
+    const text = this.state.input.trim();
+    if (!text || this.state.thinking) return;
+    let activeId = this.state.activeId;
+    const conversations = { ...this.state.conversations };
+    let order = [...this.state.order];
+    if (!activeId) {
+      activeId = 'c' + Date.now();
+      conversations[activeId] = { id: activeId, title: 'New conversation', time: 'Just now', messages: [] };
+    }
+    const conv = { ...conversations[activeId] };
+    conv.messages = [...conv.messages, { role: 'user', text }];
+    if (!conv.title || conv.title === 'New conversation') conv.title = text.length > 42 ? text.slice(0, 42) + '\u2026' : text;
+    conversations[activeId] = conv;
+    if (!order.includes(activeId)) order = [activeId, ...order];
+    this.setState({ conversations, order, activeId, input: '', thinking: true });
+    setTimeout(() => {
+      const key = this.matchDataset(text);
+      const data = this.cannedSets[key];
+      this.setState(s => {
+        const conversations2 = { ...s.conversations };
+        const conv2 = { ...conversations2[activeId] };
+        conv2.messages = [...conv2.messages, { role: 'assistant', text: data.text, sql: data.sql, table: data.table, chart: data.chart }];
+        conversations2[activeId] = conv2;
+        return { conversations: conversations2, thinking: false };
+      });
+    }, 1000);
+  };
+
+  toggleSql = (key) => this.setState(s => ({ expandedSql: { ...s.expandedSql, [key]: !s.expandedSql[key] } }));
+
+  renderVals() {
+    const s = this.state;
+    const connected = !!s.connection;
+    const connectingMeta = this.dbTypesRaw.find(d => d.id === s.connectingDbType);
+
+    const dbTypes = this.dbTypesRaw.map(d => ({ ...d, select: () => this.selectDbType(d.id) }));
+
+    const historyList = s.order.map(id => {
+      const c = s.conversations[id];
+      const active = id === s.activeId;
+      return {
+        id: c.id, title: c.title, time: c.time,
+        rowStyle: 'display:flex;flex-direction:column;text-align:left;width:100%;background:' + (active ? 'oklch(0.25 0.02 250)' : 'transparent') + ';border:none;border-radius:8px;padding:9px 10px;cursor:pointer;font-family:inherit',
+        select: () => this.setState({ activeId: id }),
+      };
+    });
+
+    const activeConv = s.activeId ? s.conversations[s.activeId] : null;
+    const rawMessages = activeConv ? activeConv.messages : [];
+
+    const messages = rawMessages.map((m, idx) => {
+      const key = (activeConv ? activeConv.id : '') + ':' + idx;
+      const expanded = !!s.expandedSql[key];
+      const chart = m.chart || [];
+      const maxVal = chart.length ? Math.max(...chart.map(b => b.value)) : 1;
+      return {
+        key,
+        isUser: m.role === 'user',
+        isAssistant: m.role === 'assistant',
+        text: m.text,
+        hasSql: !!m.sql,
+        sql: m.sql,
+        sqlExpanded: expanded,
+        sqlToggleLabel: expanded ? '\u25be Hide SQL query' : '\u25b8 Show SQL query',
+        toggleSql: () => this.toggleSql(key),
+        hasTable: !!m.table,
+        columns: m.table ? m.table.columns : [],
+        rows: m.table ? m.table.rows.map((r, ri) => ({ key: key + '-r' + ri, cells: r })) : [],
+        hasChart: chart.length > 0,
+        chartBars: chart.map(b => ({
+          label: b.label,
+          valueLabel: '$' + Math.round(b.value / 1000) + 'k',
+          height: Math.max(6, Math.round((b.value / maxVal) * 90)) + 'px',
+        })),
+      };
+    });
+
+    const suggestions = [
+      { text: 'What were total sales last quarter?', run: () => this.setState({ input: 'What were total sales last quarter?' }, () => this.sendMessage()) },
+      { text: 'Who are our top 5 customers by revenue?', run: () => this.setState({ input: 'Who are our top 5 customers by revenue?' }, () => this.sendMessage()) },
+      { text: 'How many orders were cancelled this month?', run: () => this.setState({ input: 'How many orders were cancelled this month?' }, () => this.sendMessage()) },
+    ];
+
+    const canSend = s.input.trim().length > 0 && !s.thinking;
+
+    return {
+      connected,
+      notConnected: !connected,
+      connectionName: s.connection ? s.connection.name : '',
+      connectionTypeLabel: s.connection ? (this.dbTypesRaw.find(d => d.id === s.connection.type) || {}).name || '' : '',
+      dbTypes,
+      showConnectModal: s.showConnectModal,
+      connectingMetaName: connectingMeta ? connectingMeta.name : '',
+      connectingMetaColor: connectingMeta ? connectingMeta.color : 'oklch(0.5 0.14 255)',
+      connectingMetaInitials: connectingMeta ? connectingMeta.initials : '',
+      connecting: s.connecting,
+      notConnecting: !s.connecting,
+      form: s.form,
+      hostError: s.formErrors.host || '',
+      databaseError: s.formErrors.database || '',
+      hostBorderColor: s.formErrors.host ? 'oklch(0.55 0.18 25)' : 'oklch(0.87 0.006 240)',
+      databaseBorderColor: s.formErrors.database ? 'oklch(0.55 0.18 25)' : 'oklch(0.87 0.006 240)',
+      connectBtnStyle: 'background:' + (s.connecting ? 'oklch(0.6 0.08 255)' : 'oklch(0.5 0.14 255)') + ';color:white;border:none;border-radius:8px;padding:9px 18px;font-size:13.5px;font-weight:600;font-family:inherit;cursor:pointer;min-width:96px',
+      historyList,
+      headerTitle: activeConv ? activeConv.title : (connected ? 'New conversation' : 'Querio'),
+      showSuggestions: connected && messages.length === 0 && !s.thinking,
+      messages,
+      thinking: s.thinking,
+      input: s.input,
+      sendBtnStyle: 'background:' + (canSend ? 'oklch(0.5 0.14 255)' : 'oklch(0.85 0.01 250)') + ';color:white;border:none;border-radius:10px;padding:11px 20px;font-size:14px;font-weight:600;font-family:inherit;cursor:' + (canSend ? 'pointer' : 'default'),
+      suggestions,
+      onInputChange: (e) => this.updateInput(e.target.value),
+      onHostChange: (e) => this.updateForm('host', e.target.value),
+      onPortChange: (e) => this.updateForm('port', e.target.value),
+      onDatabaseChange: (e) => this.updateForm('database', e.target.value),
+      onUsernameChange: (e) => this.updateForm('username', e.target.value),
+      onPasswordChange: (e) => this.updateForm('password', e.target.value),
+      handleKeyDown: this.handleKeyDown,
+      sendMessage: this.sendMessage,
+      closeModal: this.closeModal,
+      submitConnect: this.submitConnect,
+      disconnectDb: this.disconnectDb,
+      newConversation: this.newConversation,
+      chatRef: this.chatRef,
+    };
+  }
+}
+
+</script>
+</body>
+</html>

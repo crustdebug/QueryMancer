@@ -159,6 +159,13 @@ def test_every_engine_has_a_label_and_driver():
 # --- live SQLite round trip ----------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def active_session():
+    """Connections belong to a session, so give each test its own."""
+    with session.use_session(session.store.create()) as current:
+        yield current
+
+
 @pytest.fixture
 def sqlite_db():
     path = os.path.join(tempfile.mkdtemp(), "test.db")
