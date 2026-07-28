@@ -330,10 +330,15 @@ class DatabaseConnection:
         args: dict = {}
         if settings.engine == "postgresql":
             args["connect_timeout"] = self._connect_timeout
-            if timeout:
-                # Enforced by the server, so it still applies if the client
-                # goes away mid-query.
-                args["options"] = f"-c statement_timeout={int(timeout * 1000)}"
+            # The statement timeout is deliberately NOT passed here as
+            # "-c statement_timeout=...". A connection pooler in transaction
+            # mode - Neon's -pooler endpoint, PgBouncer, Supabase's pooler -
+            # rejects the whole connection with "unsupported startup parameter
+            # in options: statement_timeout", because it cannot honour a
+            # setting baked into the startup packet across pooled backends.
+            # _apply_statement_timeout issues it as a SET on each connection
+            # instead, which poolers do support and which is equally
+            # server-enforced once established.
         elif settings.engine == "mysql":
             args["connect_timeout"] = self._connect_timeout
             if timeout:

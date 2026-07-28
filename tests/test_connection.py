@@ -291,17 +291,38 @@ def test_display_name_never_contains_the_password():
 # --- statement timeouts ---------------------------------------------------
 
 
-def test_postgres_gets_a_server_side_statement_timeout():
-    """A runaway generated query must be bounded by the server, so it still
-    applies if the client goes away mid-query."""
+def test_postgres_does_not_put_the_timeout_in_the_startup_packet():
+    """A pooler in transaction mode - Neon's -pooler endpoint, PgBouncer,
+    Supabase's pooler - rejects the whole connection with "unsupported
+    startup parameter in options: statement_timeout". The timeout is issued
+    as a SET per connection instead, which poolers accept."""
     from connection import DatabaseConnection
 
     settings = ConnectionSettings(
         engine="postgresql", host="h", port=5432, database="d",
         username="u", password=SECRET,
     )
-    conn = DatabaseConnection(settings, statement_timeout=7)
-    assert "statement_timeout=7000" in conn.connect_args()["options"]
+    args = DatabaseConnection(settings, statement_timeout=7).connect_args()
+    assert "options" not in args, "startup options break pooled connections"
+    assert args["connect_timeout"] == 10
+
+
+def test_postgres_applies_the_timeout_as_a_session_setting():
+    """It must still actually be applied - dropping the startup parameter
+    without this would silently remove the safety limit entirely."""
+    from connection import DatabaseConnection
+
+    issued = []
+
+    class FakeConn:
+        def execute(self, statement):
+            issued.append(str(statement))
+
+    settings = ConnectionSettings(
+        engine="postgresql", host="h", port=5432, database="d", username="u",
+    )
+    DatabaseConnection(settings, statement_timeout=7)._apply_statement_timeout(FakeConn())
+    assert any("statement_timeout" in s and "7000" in s for s in issued), issued
 
 
 def test_a_zero_timeout_installs_no_limit():
@@ -310,7 +331,17 @@ def test_a_zero_timeout_installs_no_limit():
     settings = ConnectionSettings(
         engine="postgresql", host="h", port=5432, database="d", username="u",
     )
-    assert "options" not in DatabaseConnection(settings, statement_timeout=0).connect_args()
+    conn = DatabaseConnection(settings, statement_timeout=0)
+    assert "options" not in conn.connect_args()
+
+    issued = []
+
+    class FakeConn:
+        def execute(self, statement):
+            issued.append(str(statement))
+
+    conn._apply_statement_timeout(FakeConn())
+    assert issued == [], "a zero timeout must install no limit at all"
 
 
 def test_sqlite_queries_are_interrupted_past_the_deadline(tmp_path):
