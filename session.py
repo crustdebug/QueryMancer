@@ -104,7 +104,7 @@ class Session:
     def touch(self) -> None:
         self.last_seen = time.time()
 
-    def new_conversation(self, title: str = "New question") -> Conversation:
+    def new_conversation(self, title: str = "New chat") -> Conversation:
         conversation = Conversation(id=secrets.token_urlsafe(9), title=title)
         # Stamp the database now, while we know which one is attached. Doing it
         # here rather than at the call sites means every way of starting a

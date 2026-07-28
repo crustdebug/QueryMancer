@@ -770,7 +770,7 @@
   function startNewConversation() {
     state.activeId = null;
     state.messages = [];
-    el.headerTitle.textContent = "New question";
+    el.headerTitle.textContent = "New chat";
     // A fresh question runs against whatever is connected now.
     setHeaderDatabase(state.connectionName, state.connectionEngine, state.connectionEngineLabel);
     renderHistory();
