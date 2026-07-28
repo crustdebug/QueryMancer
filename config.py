@@ -97,6 +97,10 @@ class Config:
     # How long a key is benched after the provider reports a rate limit.
     KEY_COOLDOWN_SECONDS = 60
 
+    # Ceiling on a single model call, so an unreachable provider fails over
+    # instead of hanging the app.
+    REQUEST_TIMEOUT_SECONDS = 30
+
     # Agent loop limits. Each iteration is one LLM call, so this directly bounds
     # the request cost of a single user question.
     MAX_AGENT_ITERATIONS = 8
@@ -140,12 +144,13 @@ class Config:
     # lowering it risks rewriting a query to the wrong table. See schema.py.
     NAME_MATCH_CUTOFF = 0.75
 
-    class Postgres:
-        dbname = os.getenv("POSTGRES_DB")
-        user = os.getenv("POSTGRES_USER")
-        password = os.getenv("POSTGRES_PASSWORD")
-        host = os.getenv("POSTGRES_HOST")
-        port = os.getenv("POSTGRES_PORT")
+    # Database credentials are NOT read from configuration. They are entered in
+    # the app and held in per-session memory only, so a deployed instance never
+    # holds one user's credentials while serving another. See connection.py.
+    #
+    # For local convenience only, DATABASE_URL may pre-fill the connection form.
+    # It is never required, and its value is not treated as a stored credential.
+    DEFAULT_DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 
 def seed_everything(seed: int = Config.SEED):

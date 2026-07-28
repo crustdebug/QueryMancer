@@ -28,6 +28,9 @@ def create_llm(model_config: ModelConfig, api_key: Optional[str] = None) -> Base
             temperature=model_config.temperature,
             num_ctx=Config.OLLAMA_CONTEXT_WINDOW,
             keep_alive=-1,
+            # Without a timeout, a missing local Ollama leaves the app hanging
+            # rather than reporting that the fallback is unavailable.
+            client_kwargs={"timeout": Config.REQUEST_TIMEOUT_SECONDS},
         )
 
     if provider == ModelProvider.GEMINI:
@@ -37,6 +40,10 @@ def create_llm(model_config: ModelConfig, api_key: Optional[str] = None) -> Base
             model=model_config.name,
             temperature=model_config.temperature,
             google_api_key=api_key,
+            timeout=Config.REQUEST_TIMEOUT_SECONDS,
+            # The pool rotates to the next key on a 429, so the client retrying
+            # the same exhausted key just adds ~30s of waiting per attempt.
+            max_retries=0,
         )
 
     if provider == ModelProvider.GROQ:
@@ -46,6 +53,8 @@ def create_llm(model_config: ModelConfig, api_key: Optional[str] = None) -> Base
             model=model_config.name,
             temperature=model_config.temperature,
             api_key=api_key,
+            timeout=Config.REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,
         )
 
     if provider == ModelProvider.TOGETHER:
@@ -55,6 +64,8 @@ def create_llm(model_config: ModelConfig, api_key: Optional[str] = None) -> Base
             model=model_config.name,
             temperature=model_config.temperature,
             together_api_key=api_key,
+            timeout=Config.REQUEST_TIMEOUT_SECONDS,
+            max_retries=0,
         )
 
     if provider == ModelProvider.PERPLEXITY:

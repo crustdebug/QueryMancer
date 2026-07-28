@@ -9,10 +9,12 @@ load_dotenv()
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage  # noqa: E402
 
 from agent import ask, create_history  # noqa: E402
-from config import Config  # noqa: E402
+from connection import sanitize  # noqa: E402
+from connection_ui import render_connection_panel  # noqa: E402
 from key_pool import PoolExhausted  # noqa: E402
 from models import RotatingChatModel  # noqa: E402
-from tools import clear_schema_cache, get_available_tools, get_schema  # noqa: E402
+from session import NotConnected, current_connection  # noqa: E402
+from tools import get_available_tools, get_schema  # noqa: E402
 
 LOADING_MESSAGES = [
     "Consulting the ancient tomes of SQL wisdom...",
@@ -82,23 +84,18 @@ st.subheader("Talk to your database using natural language")
 
 with st.sidebar:
     st.write("# Database")
-    st.write(f"**Database:** {Config.Postgres.dbname}")
-    st.write(f"**User:** {Config.Postgres.user}")
-    st.write(f"**Host:** {Config.Postgres.host}:{Config.Postgres.port}")
+    connected = render_connection_panel()
 
-    try:
-        tables = load_table_overview()
-        st.write(f"**Tables:** {len(tables)} (all readable)")
-        with st.expander("Show tables"):
-            for name, rows, columns in tables:
-                size = f"~{rows:,} rows" if rows else "empty"
-                st.write(f"- {name} — {size}, {columns} cols")
-        if st.button("Reload schema"):
-            clear_schema_cache()
-            load_table_overview.clear()
-            st.rerun()
-    except Exception as error:  # noqa: BLE001
-        st.error(f"Cannot reach the database: {error}")
+    if connected:
+        try:
+            tables = load_table_overview()
+            st.write(f"**Tables:** {len(tables)} (all readable)")
+            with st.expander("Show tables"):
+                for name, rows, columns in tables:
+                    size = f"~{rows:,} rows" if rows else "empty"
+                    st.write(f"- {name} — {size}, {columns} cols")
+        except Exception as error:  # noqa: BLE001
+            st.error(f"Could not read the schema: {error}")
 
     st.write("# Model")
     try:
@@ -132,7 +129,18 @@ for message in st.session_state.messages:
     with st.chat_message("user" if is_user else "ai", avatar="🧑‍💻" if is_user else "🤖"):
         st.markdown(message.content)
 
-if prompt := st.chat_input("Ask a question about your data..."):
+if not connected:
+    st.info(
+        "**No database connected.** Open the sidebar, pick your database type, "
+        "and enter your connection details or a connection string.",
+        icon="🔌",
+    )
+
+placeholder_text = (
+    "Ask a question about your data..." if connected else "Connect a database first"
+)
+
+if prompt := st.chat_input(placeholder_text, disabled=not connected):
     with st.chat_message("user", avatar="🧑‍💻"):
         st.markdown(prompt)
 
@@ -142,6 +150,9 @@ if prompt := st.chat_input("Ask a question about your data..."):
             try:
                 model = get_model()
                 answer = ask(prompt, st.session_state.messages, model)
+            except NotConnected as error:
+                answer = f"**{error}**"
+                st.session_state.messages.append(AIMessage(content=answer))
             except PoolExhausted as exhausted:
                 answer = (
                     f"**All API keys are currently rate-limited.**\n\n{exhausted}\n\n"
@@ -150,7 +161,10 @@ if prompt := st.chat_input("Ask a question about your data..."):
                 )
                 st.session_state.messages.append(AIMessage(content=answer))
             except Exception as error:  # noqa: BLE001
-                answer = f"**Something went wrong.**\n\n```\n{error}\n```"
+                # Driver errors can echo the connection URL, so mask before display.
+                current = current_connection()
+                detail = sanitize(error, current.settings if current else None)
+                answer = f"**Something went wrong.**\n\n```\n{detail}\n```"
                 st.session_state.messages.append(AIMessage(content=answer))
 
         placeholder.markdown(answer)

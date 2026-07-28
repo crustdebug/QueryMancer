@@ -1,8 +1,15 @@
 streamlit>=1.44.0
 python-dotenv>=1.1.0
 rich>=13.9.4
-psycopg2-binary>=2.9.9
 pandas>=2.2.0
+
+# Database access. SQLAlchemy provides the dialect handling; each driver below
+# enables one engine. SQLite needs no driver (it ships with Python).
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9     # PostgreSQL
+pymysql>=1.1.0             # MySQL / MariaDB
+# pyodbc>=5.0.0            # SQL Server (also needs an ODBC driver installed)
+# oracledb>=2.0.0          # Oracle
 
 langchain>=1.0.0
 langchain-core>=1.0.0

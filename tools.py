@@ -11,19 +11,18 @@ itself, not merely by a check here.
 """
 
 import re
-from contextlib import contextmanager
 from typing import Any, List, Optional, Sequence
 
-import psycopg2
-from psycopg2 import sql
 from langchain_core.messages import ToolMessage
 from langchain_core.messages.tool import ToolCall
 from langchain_core.tools import BaseTool, tool
 
 import schema as schema_module
+import session as session_module
 from config import Config
+from connection import sanitize
 from custom_logging import log, log_panel
-from schema import DatabaseSchema, Table, quote_identifier
+from schema import DatabaseSchema, quote_identifier
 from sql_repair import repair_sql, suggest_for_error
 
 # --- Tool Management ---
@@ -112,35 +111,27 @@ def check_read_only(sql_query: str) -> Optional[str]:
 # --- Database connection --------------------------------------------------
 
 
-@contextmanager
-def with_sql_cursor(readonly: bool = True):
-    """Establishes a read-only database connection and provides a cursor."""
-    conn = None
-    try:
-        conn = psycopg2.connect(
-            dbname=Config.Postgres.dbname,
-            user=Config.Postgres.user,
-            password=Config.Postgres.password,
-            host=Config.Postgres.host,
-            port=Config.Postgres.port,
-            connect_timeout=10,
-        )
-        # The database refuses writes regardless of what the agent sends.
-        conn.set_session(readonly=readonly, autocommit=False)
-        cur = conn.cursor()
-        try:
-            yield cur
-        finally:
-            cur.close()
-    finally:
-        if conn:
-            conn.close()
+def get_connection():
+    """The database the current session is connected to."""
+    return session_module.require_connection()
+
+
+def _clean(error: Exception) -> str:
+    """An error message with any credentials stripped out.
+
+    Driver errors often echo the connection URL, so nothing raised by the
+    database is shown to the model or written to a log without passing here.
+    """
+    connection = session_module.current_connection()
+    settings = connection.settings if connection else None
+    return sanitize(error, settings)
 
 
 def get_schema(refresh: bool = False) -> DatabaseSchema:
-    """The live schema, read once and cached for the process."""
-    with with_sql_cursor() as cursor:
-        return schema_module.load_schema(cursor, refresh=refresh)
+    """The live schema of the connected database, read once and cached."""
+    connection = get_connection()
+    schema_module.set_dialect(connection.settings.engine)
+    return schema_module.load_schema(connection, refresh=refresh)
 
 
 def clear_schema_cache() -> None:
@@ -194,7 +185,8 @@ def inspect_database(reasoning: str, refresh: bool = False) -> str:
     if not db.tables:
         return "The database contains no readable tables."
 
-    parts = [f"Database '{Config.Postgres.dbname}' contains {len(db.tables)} table(s).", ""]
+    label = get_connection().settings.database or "(current)"
+    parts = [f"Database '{label}' contains {len(db.tables)} table(s).", ""]
     parts.append(db.overview())
 
     if db.foreign_keys:
@@ -259,17 +251,15 @@ def sample_table(reasoning: str, table_name: str, row_sample_size: int = 3) -> s
             return error
 
         limit = max(1, min(int(row_sample_size), 10))
-        query = sql.SQL("SELECT * FROM {table} LIMIT %s;").format(
-            table=sql.SQL(table.qualified)
+        # The table name comes from the schema we just read, not from the model,
+        # so it is already a known-good identifier.
+        columns, rows, _ = get_connection().run(
+            f"SELECT * FROM {table.qualified} LIMIT {limit}"
         )
-        with with_sql_cursor() as cursor:
-            cursor.execute(query, (limit,))
-            columns = [d[0] for d in cursor.description]
-            rows = cursor.fetchall()
         return format_rows(columns, rows)
     except Exception as e:  # noqa: BLE001
         log(f"[red]Error sampling table: {e}[/red]")
-        return f"Error sampling table: {e}"
+        return f"Error sampling table: {_clean(e)}"
 
 
 @tool(parse_docstring=True)
@@ -306,12 +296,9 @@ def execute_sql(reasoning: str, sql_query: str) -> str:
         db = None
 
     try:
-        with with_sql_cursor() as cursor:
-            cursor.execute(sql_query)
-            columns = [d[0] for d in cursor.description] if cursor.description else []
-            rows = cursor.fetchmany(Config.MAX_SQL_RESULT_ROWS + 1)
-        clipped = len(rows) > Config.MAX_SQL_RESULT_ROWS
-        rows = rows[: Config.MAX_SQL_RESULT_ROWS]
+        columns, rows, clipped = get_connection().run(
+            sql_query, limit=Config.MAX_SQL_RESULT_ROWS
+        )
         result = format_rows(columns, rows)
         if clipped:
             result += (
@@ -320,10 +307,11 @@ def execute_sql(reasoning: str, sql_query: str) -> str:
             )
         return prefix + result
     except Exception as e:  # noqa: BLE001
-        log(f"[red]Error running query: {e}[/red]")
-        message = f"Error running query: {e}"
+        detail = _clean(e)
+        log(f"[red]Error running query: {detail}[/red]")
+        message = f"Error running query: {detail}"
         if db is not None:
-            hint = suggest_for_error(str(e), db)
+            hint = suggest_for_error(detail, db)
             if hint:
                 message += f"\n{hint}"
         return message
@@ -366,32 +354,33 @@ def find_value(reasoning: str, search_text: str, table_name: str = "", max_hits:
 
         hits: List[str] = []
         limit = max(1, min(int(max_hits), 50))
-        with with_sql_cursor() as cursor:
-            for table in targets:
-                candidates = table.name_columns()[:6]
-                if not candidates:
-                    continue
-                for column in candidates:
-                    if len(hits) >= limit:
-                        break
-                    try:
-                        query = sql.SQL(
-                            "SELECT DISTINCT {col} FROM {table} "
-                            "WHERE {col} ILIKE %s AND {col} IS NOT NULL LIMIT 3;"
-                        ).format(
-                            col=sql.Identifier(column.name),
-                            table=sql.SQL(table.qualified),
-                        )
-                        cursor.execute(query, (f"%{search_text}%",))
-                        for (value,) in cursor.fetchall():
-                            hits.append(f"{table.qualified}.{column.name} = {value!r}")
-                    except Exception:  # noqa: BLE001
-                        # A column may not be comparable with ILIKE; skip it and
-                        # roll back so the transaction stays usable.
-                        cursor.execute("ROLLBACK;")
-                        continue
+        connection = get_connection()
+        needle = f"%{search_text.lower()}%"
+
+        for table in targets:
+            if len(hits) >= limit:
+                break
+            for column in table.name_columns()[:6]:
                 if len(hits) >= limit:
                     break
+                # LOWER(...) LIKE is case-insensitive on every engine; ILIKE is
+                # PostgreSQL-only. The value is bound, never interpolated.
+                query = (
+                    f"SELECT DISTINCT {quote_identifier(column.name)} "
+                    f"FROM {table.qualified} "
+                    f"WHERE LOWER(CAST({quote_identifier(column.name)} AS CHAR(255))) "
+                    f"LIKE :needle LIMIT 3"
+                )
+                if connection.settings.engine in ("postgresql", "oracle"):
+                    query = query.replace("CHAR(255)", "TEXT")
+                try:
+                    _, rows, _ = connection.run(query, {"needle": needle})
+                except Exception:  # noqa: BLE001
+                    # Some column types cannot be cast or compared; skip them.
+                    continue
+                for (value,) in rows:
+                    if value is not None:
+                        hits.append(f"{table.qualified}.{column.name} = {value!r}")
 
         if not hits:
             return (
@@ -401,8 +390,8 @@ def find_value(reasoning: str, search_text: str, table_name: str = "", max_hits:
             )
         return f"Found '{search_text}' in:\n" + "\n".join(hits[:limit])
     except Exception as e:  # noqa: BLE001
-        log(f"[red]Error searching for value: {e}[/red]")
-        return f"Error searching for value: {e}"
+        log(f"[red]Error searching for value: {_clean(e)}[/red]")
+        return f"Error searching for value: {_clean(e)}"
 
 
 @tool(parse_docstring=True)
@@ -443,15 +432,11 @@ def get_distinct_column_values(
             column = resolved
 
         limit = max(1, min(int(value_limit), 100))
-        query = sql.SQL("SELECT DISTINCT {column} FROM {table} LIMIT %s;").format(
-            column=sql.Identifier(column.name), table=sql.SQL(table.qualified)
+        _, rows, clipped = get_connection().run(
+            f"SELECT DISTINCT {quote_identifier(column.name)} FROM {table.qualified}",
+            limit=limit,
         )
-        with with_sql_cursor() as cursor:
-            cursor.execute(query, (limit + 1,))
-            values = [row[0] for row in cursor.fetchall()]
-
-        clipped = len(values) > limit
-        values = values[:limit]
+        values = [row[0] for row in rows]
         rendered = ", ".join("NULL" if v is None else str(v) for v in values)
         if clipped:
             rendered += f" ... [more than {limit} distinct values]"
@@ -460,8 +445,8 @@ def get_distinct_column_values(
         )
         return prefix + (rendered or "No values found.")
     except Exception as e:  # noqa: BLE001
-        log(f"[red]Error getting distinct values: {e}[/red]")
-        return f"Error getting distinct column values: {e}"
+        log(f"[red]Error getting distinct values: {_clean(e)}[/red]")
+        return f"Error getting distinct column values: {_clean(e)}"
 
 
 @tool(parse_docstring=True)
@@ -494,10 +479,8 @@ def explain_query(reasoning: str, sql_query: str) -> str:
         prefix = ""
 
     try:
-        with with_sql_cursor() as cursor:
-            cursor.execute(f"EXPLAIN {clean}")
-            rows = cursor.fetchall()
-        return prefix + "\n".join(str(row[0]) for row in rows)
+        _, rows, _ = get_connection().run(f"EXPLAIN {clean}")
+        return prefix + "\n".join(" | ".join(str(v) for v in row) for row in rows)
     except Exception as e:  # noqa: BLE001
-        log(f"[red]Error explaining query: {e}[/red]")
-        return f"Error explaining query: {e}"
+        log(f"[red]Error explaining query: {_clean(e)}[/red]")
+        return f"Error explaining query: {_clean(e)}"

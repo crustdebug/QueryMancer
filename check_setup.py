@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Verify the database connection and API key pools before running the app.
+"""Verify the API key pools, and optionally a database connection.
 
-Usage:  python check_setup.py
+Databases are normally connected inside the app, so no credentials are needed
+here. To test one from the command line, pass a connection string:
+
+    python check_setup.py
+    python check_setup.py postgresql://user:password@host:5432/database
+    python check_setup.py sqlite:///C:/data/app.db
 """
 
 import sys
@@ -11,36 +16,34 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import Config  # noqa: E402
+from connection import ConnectionSettings, sanitize  # noqa: E402
 
 
-def check_database() -> bool:
+def check_database(url: str) -> bool:
+    import session
+
     print("Database")
-    print(f"  target: {Config.Postgres.user}@{Config.Postgres.host}:"
-          f"{Config.Postgres.port}/{Config.Postgres.dbname}")
     try:
-        from tools import with_sql_cursor
-
-        with with_sql_cursor() as cursor:
-            cursor.execute("SELECT current_database();")
-            (name,) = cursor.fetchone()
-            cursor.execute(
-                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';"
-            )
-            (table_count,) = cursor.fetchone()
-    except Exception as error:  # noqa: BLE001
+        settings = ConnectionSettings.from_url(url)
+    except ValueError as error:
         print(f"  FAILED: {error}")
         return False
 
-    print(f"  connected to '{name}' with {table_count} table(s) in the public schema")
+    # summary masks the password, so this is safe to print.
+    print(f"  target: {settings.summary}")
 
-    # Read the schema the same way the agent does, so this reports exactly what
-    # the agent will see.
+    ok, message = session.connect(settings)
+    if not ok:
+        print(f"  FAILED: {sanitize(message, settings)}")
+        return False
+    print(f"  {message}")
+
     try:
         from tools import get_schema
 
         db = get_schema(refresh=True)
     except Exception as error:  # noqa: BLE001
-        print(f"  schema introspection FAILED: {error}")
+        print(f"  schema introspection FAILED: {sanitize(error, settings)}")
         return False
 
     populated = [t for t in db.tables if t.estimated_rows > 0]
@@ -51,8 +54,8 @@ def check_database() -> bool:
         largest = max(populated, key=lambda t: t.estimated_rows)
         print(f"  largest table: {largest.qualified} (~{largest.estimated_rows:,} rows)")
     else:
-        print("  note: every table appears empty. Queries will return no rows.")
-        print("        If you just loaded data, run ANALYZE; to refresh statistics.")
+        print("  note: every table appears empty, or the engine reports no")
+        print("        statistics. On PostgreSQL, run ANALYZE; to refresh them.")
     return True
 
 
@@ -97,7 +100,18 @@ def check_live_call() -> bool:
 
 
 if __name__ == "__main__":
-    db_ok = check_database()
+    # A connection string may be passed as an argument, or set as DATABASE_URL
+    # for local convenience. Neither is required: the app connects in the UI.
+    url = sys.argv[1] if len(sys.argv) > 1 else Config.DEFAULT_DATABASE_URL
+
+    if url:
+        db_ok = check_database(url)
+    else:
+        db_ok = True
+        print("Database")
+        print("  no connection string given - connect inside the app instead.")
+        print("  To test one here: python check_setup.py postgresql://user:pw@host/db")
+
     keys_ok = check_keys()
     call_ok = check_live_call() if keys_ok else False
 

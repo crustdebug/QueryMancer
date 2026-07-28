@@ -1,12 +1,13 @@
 # Querymancer: SQL AI Agent
 
-Ask questions about a PostgreSQL database in plain English. An LLM agent
-explores the schema with read-only tools, writes the SQL itself, runs it, and
-answers in Markdown.
+Ask questions about your database in plain English. An LLM agent explores the
+schema with read-only tools, writes the SQL itself, runs it, and answers in
+Markdown.
 
-Point it at **any** database and it works: the schema is discovered at runtime,
-so nothing about your tables is hardcoded. Change `POSTGRES_DB` in `.env` and
-restart — there is no schema list to maintain.
+Connect **any** database from the sidebar — PostgreSQL, MySQL/MariaDB, SQLite,
+SQL Server or Oracle — with a form or a connection string. The schema is
+discovered at runtime, so nothing about your tables is hardcoded and there is
+no configuration file to maintain.
 
 ## Setup
 
@@ -15,18 +16,49 @@ python -m venv .venv
 .venv/Scripts/activate        # Windows;  source .venv/bin/activate on macOS/Linux
 pip install -r requirements.txt
 
-cp .env.example .env          # then fill in your database and API keys
+cp .env.example .env          # add your API key(s) - no database details needed
 streamlit run app.py
 ```
 
-Then check everything is wired up:
+Then open the sidebar and connect your database. Only API keys go in `.env`.
+
+To check your keys work before starting:
 
 ```bash
 python check_setup.py
+python check_setup.py postgresql://user:password@host:5432/db   # also test a database
 ```
 
-It reports how many tables the agent can see, how many API keys are in
-rotation, and makes one live model call to confirm the whole path works.
+## Connecting your database
+
+Open the sidebar, choose your database type, and either fill in the fields or
+paste a connection string:
+
+| Engine | Connection string | Driver needed |
+|---|---|---|
+| PostgreSQL | `postgresql://user:pw@host:5432/db` | `psycopg2-binary` ✅ |
+| MySQL / MariaDB | `mysql://user:pw@host:3306/db` | `pymysql` ✅ |
+| SQLite | `sqlite:///C:/path/to/app.db` | none ✅ |
+| SQL Server | `mssql://user:pw@host:1433/db` | `pyodbc` |
+| Oracle | `oracle://user:pw@host:1521/db` | `oracledb` |
+
+The first three work out of the box; uncomment the others in
+`requirements.txt` if you need them. Once connected, the **Database** dropdown
+switches between databases on the same server without re-entering credentials.
+
+### How your credentials are handled
+
+- They are kept **in your browser session only** — never written to a file,
+  an environment variable, or a module global.
+- Nothing is persisted: closing the tab or clicking **Disconnect** discards them.
+- Passwords are masked everywhere they could surface — the displayed URL, the
+  connection summary, log lines, and driver error messages, which often echo
+  the connection URL back verbatim.
+- On a shared or deployed instance, one person's connection is never visible to
+  another, because session state is per-session by construction.
+
+`DATABASE_URL` in `.env` is supported for local convenience only. It pre-fills
+the form; it is not required and not treated as stored state.
 
 ## Using several free API keys
 
@@ -127,16 +159,20 @@ keys, and `get_distinct_column_values` supplies real category labels before a
 
 ## Safety
 
-Queries run in a PostgreSQL **read-only session**, so the database itself
-rejects any write — that is the real guarantee, not a keyword filter. On top of
-that, `execute_sql` accepts only a single `SELECT`/`WITH` statement, with string
-literals and comments stripped before the check so a column named `updated_by`
-or a literal containing `DELETE` is not misread as a write.
+Two independent layers block writes:
+
+1. **The database itself.** Each engine's strongest available guarantee is
+   applied — a read-only transaction on PostgreSQL, MySQL and Oracle, and an
+   immutable file handle (`mode=ro`) on SQLite.
+2. **Statement checking.** `execute_sql` accepts only a single `SELECT`/`WITH`
+   statement. String literals and comments are stripped first, so a column
+   named `updated_by` or a literal containing `DELETE` is not misread as a
+   write, and a stacked `SELECT 1; DROP TABLE x` is rejected outright.
 
 Within read-only, access is **unrestricted**: every table, column and row the
-database user can see. The agent is as trusted as the credentials in your
-`.env`, so point it at a user with only the privileges you want exposed — a
-read-only role scoped to the right schemas is the right control here.
+connected user can see. The agent is exactly as privileged as the credentials
+you give it, so connecting a read-only database role is the right control if
+you want a narrower boundary.
 
 ## Configuration
 

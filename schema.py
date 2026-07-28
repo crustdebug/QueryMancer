@@ -65,16 +65,36 @@ _TEXT_TYPES = {
 }
 
 
+# The quoting character differs by engine: MySQL uses backticks, everything
+# else the SQL-standard double quote. Set once when a connection is made so
+# rendered identifiers match the dialect actually in use.
+_quote_char = '"'
+
+# Schemas that are implicit for their engine and should not be written into a
+# qualified name: 'public' on PostgreSQL, 'dbo' on SQL Server, 'main' on SQLite.
+# Qualifying with them is valid but adds noise to every identifier the model
+# reads and writes.
+_IMPLICIT_SCHEMAS = {"public", "dbo", "main", ""}
+
+
+def set_dialect(engine: str) -> None:
+    """Configure identifier quoting for the connected engine."""
+    global _quote_char
+    _quote_char = "`" if engine == "mysql" else '"'
+
+
 def quote_identifier(name: str) -> str:
-    """Render an identifier for SQL, quoting when Postgres would need it."""
+    """Render an identifier for SQL, quoting when the engine would need it."""
     if _SAFE_IDENTIFIER.match(name):
         return name
+    if _quote_char == "`":
+        return "`" + name.replace("`", "``") + "`"
     return '"' + name.replace('"', '""') + '"'
 
 
 def qualify(schema: str, table: str) -> str:
     """Render a schema-qualified table reference."""
-    if schema and schema != "public":
+    if schema and schema.lower() not in _IMPLICIT_SCHEMAS:
         return f"{quote_identifier(schema)}.{quote_identifier(table)}"
     return quote_identifier(table)
 
@@ -308,107 +328,166 @@ def _similarity(a: str, b: str) -> float:
     return ratio
 
 
+
 # --- Loading --------------------------------------------------------------
 
-# System schemas are never useful to the agent and would bury the real tables.
-_EXCLUDED_SCHEMAS = ("pg_catalog", "information_schema", "pg_toast")
+# Schemas that hold engine internals rather than user data. Listing them would
+# bury the real tables under hundreds of catalog entries.
+_EXCLUDED_SCHEMAS = {
+    # PostgreSQL
+    "pg_catalog", "information_schema", "pg_toast",
+    # MySQL / MariaDB
+    "mysql", "performance_schema", "sys",
+    # SQL Server
+    "sys", "guest", "db_owner", "db_accessadmin", "db_securityadmin",
+    "db_ddladmin", "db_backupoperator", "db_datareader", "db_datawriter",
+    "db_denydatareader", "db_denydatawriter", "information_schema",
+    # Oracle
+    "sysaux", "system", "outln", "xdb",
+}
 
 _cache: Dict[str, DatabaseSchema] = {}
 _lock = threading.Lock()
 
 
-def load_schema(cursor, refresh: bool = False) -> DatabaseSchema:
-    """Read the full schema from the database, caching the result.
+def load_schema(connection, refresh: bool = False) -> DatabaseSchema:
+    """Read the full schema through SQLAlchemy, caching the result.
 
-    One pass over the catalog replaces what would otherwise be many round trips
-    of separate list-tables and describe-table calls, and the result is reused for the life of
-    the process.
+    `connection` is a DatabaseConnection. SQLAlchemy's inspector is used rather
+    than hand-written catalog queries so the same code serves PostgreSQL, MySQL,
+    SQLite, SQL Server and Oracle.
+
+    The cache key includes the target database, so switching connections in the
+    UI does not serve a previous database's schema.
     """
-    with _lock:
-        if not refresh and "schema" in _cache:
-            return _cache["schema"]
-
-    schema = DatabaseSchema()
-
-    # Columns for every user table and view, in one query.
-    cursor.execute(
-        """
-        SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.is_nullable
-        FROM information_schema.columns c
-        JOIN information_schema.tables t
-          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-        WHERE c.table_schema NOT IN %s
-          AND t.table_type IN ('BASE TABLE', 'VIEW')
-        ORDER BY c.table_schema, c.table_name, c.ordinal_position;
-        """,
-        (_EXCLUDED_SCHEMAS,),
-    )
-    by_key: Dict[str, Table] = {}
-    for schema_name, table_name, column_name, data_type, nullable in cursor.fetchall():
-        key = f"{schema_name.lower()}.{table_name.lower()}"
-        table = by_key.get(key)
-        if table is None:
-            table = Table(schema=schema_name, name=table_name)
-            by_key[key] = table
-            schema.tables.append(table)
-        table.columns.append(
-            Column(name=column_name, data_type=data_type, nullable=(nullable == "YES"))
-        )
-
-    # Primary keys.
-    cursor.execute(
-        """
-        SELECT tc.table_schema, tc.table_name, kcu.column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON kcu.constraint_name = tc.constraint_name
-         AND kcu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'PRIMARY KEY'
-          AND tc.table_schema NOT IN %s;
-        """,
-        (_EXCLUDED_SCHEMAS,),
-    )
-    for schema_name, table_name, column_name in cursor.fetchall():
-        table = by_key.get(f"{schema_name.lower()}.{table_name.lower()}")
-        if table:
-            table.primary_key.append(column_name)
-
-    # Foreign keys.
-    cursor.execute(
-        """
-        SELECT tc.table_schema, tc.table_name, kcu.column_name,
-               ccu.table_schema, ccu.table_name, ccu.column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON kcu.constraint_name = tc.constraint_name
-         AND kcu.table_schema = tc.table_schema
-        JOIN information_schema.constraint_column_usage ccu
-          ON ccu.constraint_name = tc.constraint_name
-         AND ccu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY'
-          AND tc.table_schema NOT IN %s;
-        """,
-        (_EXCLUDED_SCHEMAS,),
-    )
-    for row in cursor.fetchall():
-        schema.foreign_keys.append(ForeignKey(*row))
-
-    # Row estimates from the planner's statistics - effectively free, whereas
-    # COUNT(*) per table would scan the entire database.
-    cursor.execute(
-        """
-        SELECT schemaname, relname, GREATEST(n_live_tup, 0)
-        FROM pg_stat_user_tables;
-        """
-    )
-    for schema_name, table_name, estimate in cursor.fetchall():
-        table = by_key.get(f"{schema_name.lower()}.{table_name.lower()}")
-        if table:
-            table.estimated_rows = int(estimate or 0)
+    key = connection.settings.safe_url
 
     with _lock:
-        _cache["schema"] = schema
-    return schema
+        if not refresh and key in _cache:
+            return _cache[key]
+
+    from sqlalchemy import inspect as sa_inspect
+
+    database = DatabaseSchema()
+    engine_name = connection.settings.engine
+
+    with connection.connect() as conn:
+        inspector = sa_inspect(conn)
+
+        # SQLite has no schemas; every other engine may have several. Only the
+        # default schema is read unless the engine reports more, which keeps
+        # the overview focused on the user's own tables.
+        default_schema = inspector.default_schema_name
+        schemas = [default_schema] if default_schema else [None]
+        if engine_name in ("postgresql", "mssql"):
+            try:
+                schemas = [
+                    s for s in inspector.get_schema_names()
+                    if s.lower() not in _EXCLUDED_SCHEMAS
+                ] or schemas
+            except Exception:  # noqa: BLE001
+                pass
+
+        by_key: Dict[str, Table] = {}
+        for schema_name in schemas:
+            try:
+                names = inspector.get_table_names(schema=schema_name)
+                names += inspector.get_view_names(schema=schema_name)
+            except Exception:  # noqa: BLE001
+                continue
+
+            for table_name in names:
+                try:
+                    columns = inspector.get_columns(table_name, schema=schema_name)
+                except Exception:  # noqa: BLE001
+                    continue
+
+                table = Table(schema=schema_name or "", name=table_name)
+                for column in columns:
+                    table.columns.append(
+                        Column(
+                            name=column["name"],
+                            data_type=_type_name(column.get("type")),
+                            nullable=bool(column.get("nullable", True)),
+                        )
+                    )
+
+                try:
+                    pk = inspector.get_pk_constraint(table_name, schema=schema_name)
+                    table.primary_key = list(pk.get("constrained_columns") or [])
+                except Exception:  # noqa: BLE001
+                    pass
+
+                database.tables.append(table)
+                by_key[table.key] = table
+
+                try:
+                    for fk in inspector.get_foreign_keys(table_name, schema=schema_name):
+                        referred_table = fk.get("referred_table")
+                        constrained = fk.get("constrained_columns") or []
+                        referred = fk.get("referred_columns") or []
+                        if not referred_table or not constrained or not referred:
+                            continue
+                        database.foreign_keys.append(
+                            ForeignKey(
+                                schema=schema_name or "",
+                                table=table_name,
+                                column=constrained[0],
+                                ref_schema=fk.get("referred_schema") or (schema_name or ""),
+                                ref_table=referred_table,
+                                ref_column=referred[0],
+                            )
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _load_row_estimates(conn, engine_name, by_key)
+
+    with _lock:
+        _cache[key] = database
+    return database
+
+
+def _type_name(sa_type) -> str:
+    """A readable type name, lower-cased to match the text-type checks."""
+    if sa_type is None:
+        return "unknown"
+    try:
+        return str(sa_type).lower()
+    except Exception:  # noqa: BLE001
+        return type(sa_type).__name__.lower()
+
+
+def _load_row_estimates(conn, engine_name: str, by_key: Dict[str, "Table"]) -> None:
+    """Fill in approximate row counts where the engine can supply them cheaply.
+
+    These come from planner statistics, so they cost one query for the whole
+    database. COUNT(*) per table would scan everything, which on a large
+    database is far too slow to run on every connect.
+    """
+    from sqlalchemy import text as sa_text
+
+    queries = {
+        "postgresql": (
+            "SELECT schemaname, relname, GREATEST(n_live_tup, 0) FROM pg_stat_user_tables"
+        ),
+        "mysql": (
+            "SELECT table_schema, table_name, COALESCE(table_rows, 0) "
+            "FROM information_schema.tables WHERE table_schema = DATABASE()"
+        ),
+    }
+    query = queries.get(engine_name)
+    if not query:
+        return
+
+    try:
+        for schema_name, table_name, estimate in conn.execute(sa_text(query)):
+            table = by_key.get(f"{(schema_name or '').lower()}.{table_name.lower()}")
+            if table:
+                table.estimated_rows = int(estimate or 0)
+    except Exception:  # noqa: BLE001
+        # Statistics are a nicety; the app works fine without them.
+        pass
 
 
 def clear_cache() -> None:
