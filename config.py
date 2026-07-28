@@ -32,15 +32,24 @@ EXAONE = ModelConfig("lgai/exaone-3-5-32b-instruct", 0.0, ModelProvider.TOGETHER
 
 # gemini-2.0-flash and gemini-2.0-flash-lite were confirmed working when this
 # app was first built, but Google has since zeroed their free-tier quota
-# ("limit: 0" on every call) in favor of newer generations. gemini-3.5-flash-lite
-# is the current free-tier model as of 2026-07; the "-latest" aliases below
-# track whichever generation Google currently points them at, so they serve as
-# a fallback that shouldn't go stale the same way. Pin an exact version instead
-# of an alias if you need reproducible output across a deployment's lifetime.
-GEMINI_FLASH = ModelConfig("gemini-3.5-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
-GEMINI_FLASH_LITE = ModelConfig("gemini-flash-lite-latest", 0.0, ModelProvider.GEMINI, 1_000_000)
+# ("limit: 0" on every call) in favor of newer generations. gemini-3.5-flash is
+# the fuller model and gemini-3.5-flash-lite the faster/cheaper one, both
+# confirmed on the free tier as of 2026-07. The "-latest" aliases below track
+# whichever generation Google currently points them at, so they serve as a
+# fallback that shouldn't go stale the same way a pinned version eventually
+# does. Pin an exact version instead of an alias if you need reproducible
+# output across a deployment's lifetime.
+GEMINI_FLASH = ModelConfig("gemini-3.5-flash", 0.0, ModelProvider.GEMINI, 1_000_000)
+GEMINI_FLASH_LITE = ModelConfig("gemini-3.5-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
 GEMINI_FLASH_LATEST = ModelConfig("gemini-flash-latest", 0.0, ModelProvider.GEMINI, 1_000_000)
 PPLX_SONAR = ModelConfig("sonar", 0.0, ModelProvider.PERPLEXITY)
+
+# Groq free-tier models capable of the multi-step tool calling this agent
+# relies on. gpt-oss-120b is the strongest all-round option for agentic/tool
+# use on Groq's free tier; llama-3.3-70b-versatile is kept as a fallback since
+# it was the previously-verified choice and Groq's free-tier lineup changes
+# periodically, same as Gemini's above.
+GROQ_GPT_OSS_120B = ModelConfig("openai/gpt-oss-120b", 0.0, ModelProvider.GROQ, 131_000)
 LLAMA_3_3_70B = ModelConfig("llama-3.3-70b-versatile", 0.0, ModelProvider.GROQ, 128_000)
 
 
@@ -102,6 +111,7 @@ class Config:
     FALLBACK_MODELS = [
         GEMINI_FLASH_LITE,
         GEMINI_FLASH_LATEST,
+        GROQ_GPT_OSS_120B,
         LLAMA_3_3_70B,
         PPLX_SONAR,
         QWEN_2_5,

@@ -95,11 +95,40 @@ def test_cooldown_expiry_returns_key_to_rotation(monkeypatch):
         ("RESOURCE_EXHAUSTED: quota", "rate_limit"),
         ("API key not valid", "auth"),
         ("401 Unauthorized", "auth"),
+        ("503 UNAVAILABLE: This model is currently experiencing high demand.", "unavailable"),
+        ("502 Bad Gateway", "unavailable"),
         ("connection reset by peer", "other"),
     ],
 )
 def test_error_classification(message, expected):
     assert _classify(Exception(message)) == expected
+
+
+def test_unavailable_model_rotates_to_next_key_instead_of_crashing():
+    """A transient 503 must not propagate past the pool - it should rotate.
+
+    This mirrors a real failure: gemini-3.5-flash returned a 503 UNAVAILABLE
+    that used to be misclassified as "other" and re-raised immediately,
+    skipping both key rotation and the model-level fallback chain above it.
+    """
+    pool = KeyPool(provider="test", keys=["a", "b"])
+
+    def call(key: str) -> str:
+        if key == "a":
+            raise Exception("503 UNAVAILABLE: high demand, try again later")
+        return key
+
+    assert pool.run(call) == "b"
+
+
+def test_pool_exhausted_when_every_key_is_unavailable():
+    pool = KeyPool(provider="test", keys=["a", "b"], unavailable_cooldown_seconds=1)
+
+    def always_unavailable(key: str):
+        raise Exception("503 UNAVAILABLE: high demand")
+
+    with pytest.raises(PoolExhausted):
+        pool.run(always_unavailable)
 
 
 def test_keys_are_redacted_in_stats():

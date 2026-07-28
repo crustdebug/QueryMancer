@@ -4,12 +4,17 @@ Free API tiers are capped per key, not per user, so several keys from different
 projects multiply the usable quota. This module spreads calls across a pool and
 takes a key out of service when the provider says it is over quota.
 
-Two failure modes are distinguished, because they deserve different handling:
+Three failure modes are distinguished, because they deserve different handling:
 
   * A rate limit (HTTP 429, "quota exceeded") is temporary. The key is benched
     for a cooldown and returns to the rotation afterwards.
   * An auth failure (HTTP 401/403, "API key not valid") is permanent for this
     process. The key is retired immediately so it is never tried again.
+  * A transient server error (HTTP 503, "overloaded", "unavailable") is not
+    the key's fault at all - retrying the same key would likely fail the same
+    way. It is benched briefly anyway so the pool moves on to another key (or,
+    once the pool is exhausted, RotatingChatModel falls back to the next
+    model) rather than crashing the request outright.
 
 Anything else is a genuine error and is raised to the caller rather than being
 silently retried against every key in the pool.
@@ -32,7 +37,6 @@ RATE_LIMIT_MARKERS = (
     "resource_exhausted",
     "resource exhausted",
     "too many requests",
-    "overloaded",
 )
 
 AUTH_FAILURE_MARKERS = (
@@ -47,15 +51,35 @@ AUTH_FAILURE_MARKERS = (
     "403",
 )
 
+# A transiently unavailable model/service - not a quota or auth problem, but
+# still worth benching briefly so the pool (and, above it, the model-fallback
+# chain) moves on instead of the whole request failing outright.
+UNAVAILABLE_MARKERS = (
+    "503",
+    "unavailable",
+    "overloaded",
+    "high demand",
+    "server_error",
+    "internal error",
+    "try again later",
+    "bad gateway",
+    "502",
+    "504",
+    "gateway timeout",
+    "service unavailable",
+)
+
 
 def _classify(error: BaseException) -> str:
-    """Bucket a provider exception into 'rate_limit', 'auth', or 'other'."""
+    """Bucket a provider exception into 'rate_limit', 'auth', 'unavailable', or 'other'."""
     message = f"{type(error).__name__}: {error}".lower()
     # Auth is checked first: an invalid key sometimes also mentions "quota".
     if any(marker in message for marker in AUTH_FAILURE_MARKERS):
         return "auth"
     if any(marker in message for marker in RATE_LIMIT_MARKERS):
         return "rate_limit"
+    if any(marker in message for marker in UNAVAILABLE_MARKERS):
+        return "unavailable"
     return "other"
 
 
@@ -74,6 +98,7 @@ class _KeyState:
     retired: bool = False
     successes: int = 0
     rate_limit_hits: int = 0
+    unavailable_hits: int = 0
 
     def usable(self, now: float) -> bool:
         return not self.retired and now >= self.blocked_until
@@ -89,6 +114,7 @@ class KeyPool:
     provider: str
     keys: List[str]
     cooldown_seconds: float = 60.0
+    unavailable_cooldown_seconds: float = 5.0
     _states: List[_KeyState] = field(default_factory=list, init=False)
     _cursor: int = field(default=0, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -166,6 +192,18 @@ class KeyPool:
                             f"[yellow]{self.provider}: key {_redact(state.key)} rate-limited. "
                             f"Benched {self.cooldown_seconds:.0f}s, rotating to next key.[/yellow]"
                         )
+                    elif kind == "unavailable":
+                        state.unavailable_hits += 1
+                        # Much shorter than the rate-limit cooldown: an
+                        # overloaded model typically clears in seconds, and
+                        # the point here is mainly to let the pool - and above
+                        # it, the model fallback chain - move on immediately
+                        # rather than hammering the same unavailable model.
+                        state.blocked_until = time.monotonic() + self.unavailable_cooldown_seconds
+                        log(
+                            f"[yellow]{self.provider}: key {_redact(state.key)} hit a "
+                            f"temporarily unavailable model. Rotating to next key.[/yellow]"
+                        )
                     else:
                         # Not a quota problem - rotating keys would not help.
                         raise
@@ -198,6 +236,7 @@ class KeyPool:
                     "status": status,
                     "calls": state.successes,
                     "rate_limits": state.rate_limit_hits,
+                    "unavailable": state.unavailable_hits,
                 }
             )
         return rows
