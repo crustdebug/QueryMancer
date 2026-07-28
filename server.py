@@ -101,7 +101,10 @@ def _connection_state(session) -> dict:
     return {
         "connected": True,
         # Never includes the password.
-        "name": settings.database or settings.host,
+        "name": settings.display_name,
+        # The full identifier, for a tooltip. A SQLite path is long enough that
+        # the short name alone can be ambiguous between two files.
+        "fullName": settings.database or settings.host,
         "engine": settings.engine,
         "engineLabel": settings.label,
         "summary": settings.summary,

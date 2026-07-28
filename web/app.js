@@ -27,6 +27,11 @@
     pendingEngine: "postgresql",
     usingUrl: false,
     busy: false,
+    // The live connection, kept so history threads can be compared against it.
+    connectionName: "",
+    connectionEngine: "",
+    connectionEngineLabel: "",
+    connectionFullName: "",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -217,11 +222,21 @@
     el.viewChat.classList.toggle("is-hidden", !state.connected);
 
     if (state.connected) {
-      el.connName.textContent = data.name || "";
-      el.connMeta.textContent = `${data.engineLabel || ""} · connected`;
-      el.badgeText.textContent = `${data.engineLabel || ""} · ${data.name || ""}`;
+      state.connectionName = data.name || "";
+      state.connectionEngine = data.engine || "";
+      state.connectionEngineLabel = data.engineLabel || "";
+      state.connectionFullName = data.fullName || data.name || "";
+      el.connName.textContent = state.connectionName;
+      // The card shows the short name; the full path stays reachable on hover.
+      el.connName.title = state.connectionFullName;
+      el.connMeta.textContent = `${state.connectionEngineLabel} · connected`;
+      setHeaderDatabase(state.connectionName, state.connectionEngine, state.connectionEngineLabel);
       loadSchema();
     } else {
+      state.connectionName = "";
+      state.connectionEngine = "";
+      state.connectionEngineLabel = "";
+      state.connectionFullName = "";
       el.headerTitle.textContent = "Querio";
     }
   }
@@ -247,9 +262,25 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "history-item" + (conversation.id === state.activeId ? " is-active" : "");
+
+      // Which database this thread was asked against. The server stamps it when
+      // the conversation is created, so reconnecting elsewhere does not relabel
+      // older threads.
+      let meta = `<div class="history-time">${esc(relativeTime(conversation.updated_at))}</div>`;
+      if (conversation.database) {
+        const style = ENGINE_STYLE[conversation.engine] || { color: "oklch(0.5 0.02 250)" };
+        const title = `${conversation.engineLabel || "Database"} · ${conversation.database}`;
+        meta +=
+          `<span class="history-sep">·</span>` +
+          `<span class="history-db" title="${esc(title)}">` +
+          `<span class="history-db-dot" style="background:${style.color}"></span>` +
+          `<span class="history-db-name">${esc(conversation.database)}</span>` +
+          `</span>`;
+      }
+
       button.innerHTML =
         `<div class="history-title">${esc(conversation.title)}</div>` +
-        `<div class="history-time">${esc(relativeTime(conversation.updated_at))}</div>`;
+        `<div class="history-meta">${meta}</div>`;
       button.addEventListener("click", () => openConversation(conversation.id));
       el.historyList.appendChild(button);
     }
@@ -510,20 +541,62 @@
     }
   }
 
+  /** Re-read the conversation list from the server and repaint the sidebar. */
+  async function refreshConversations() {
+    try {
+      const data = await api("/api/state");
+      state.conversations = data.conversations || [];
+      renderHistory();
+    } catch (error) {
+      /* Leave the current list in place if the refresh fails. */
+    }
+  }
+
   async function openConversation(id) {
     const data = await api(`/api/conversations/${encodeURIComponent(id)}`);
     if (data.error) return;
     state.activeId = data.id;
     state.messages = data.messages || [];
     el.headerTitle.textContent = data.title || "Querio";
+    // Reflect the database this thread belongs to, which may differ from the
+    // one currently connected.
+    setHeaderDatabase(data.database, data.engine, data.engineLabel);
     renderHistory();
     renderMessages();
+  }
+
+  /**
+   * Point the topbar badge at a specific database. Called with a conversation's
+   * stored database when browsing history, and with the live connection
+   * otherwise. Falls back to the live connection when a conversation has no
+   * stamp (one created before this was recorded).
+   */
+  function setHeaderDatabase(database, engine, engineLabel) {
+    const name = database || state.connectionName;
+    const label = engineLabel || state.connectionEngineLabel;
+    if (!name) {
+      el.headerBadge.classList.add("is-hidden");
+      return;
+    }
+    el.headerBadge.classList.remove("is-hidden");
+    el.badgeText.textContent = `${label || ""} · ${name}`;
+
+    // A thread asked against a database other than the one attached now is
+    // worth flagging, since its answers describe data that is no longer live.
+    const stale = Boolean(database) && Boolean(state.connectionName) &&
+      database !== state.connectionName;
+    el.headerBadge.classList.toggle("is-stale", stale);
+    el.headerBadge.title = stale
+      ? `This conversation used ${name}. You are now connected to ${state.connectionName}.`
+      : "";
   }
 
   function startNewConversation() {
     state.activeId = null;
     state.messages = [];
     el.headerTitle.textContent = "New question";
+    // A fresh question runs against whatever is connected now.
+    setHeaderDatabase(state.connectionName, state.connectionEngine, state.connectionEngineLabel);
     renderHistory();
     renderMessages();
     renderSuggestions();
@@ -653,6 +726,10 @@
       renderConnection(data);
       renderSuggestions();
       renderMessages();
+      // Earlier threads survive a reconnect on the server, so bring the
+      // sidebar back in step with it - they stay readable, each labelled with
+      // the database it actually used.
+      refreshConversations();
       el.input.focus();
     } catch (error) {
       el.modalError.textContent = error.message;
@@ -668,9 +745,11 @@
     await api("/api/disconnect", { method: "POST" });
     state.connected = false;
     state.messages = [];
-    state.conversations = [];
     state.activeId = null;
     state.suggestions = [];
+    // state.conversations is deliberately kept: disconnecting drops the
+    // database, not the history. The server still holds those threads, and
+    // they reappear in the sidebar once a database is attached again.
     renderConnection({ connected: false });
     renderHistory();
     renderMessages();

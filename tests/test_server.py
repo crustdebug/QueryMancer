@@ -214,6 +214,111 @@ def test_unknown_conversation_returns_an_error(client):
     assert "error" in client.get("/api/conversations/nope").json()
 
 
+# --- which database answered a conversation -------------------------------
+
+
+def test_conversation_records_the_database_it_was_asked_against(client, db_path):
+    connect(client, db_path)
+    body = client.post("/api/ask", json={"question": "List the customers"}).json()
+
+    summary = client.get("/api/state").json()["conversations"][0]
+    # The short display name, not the full path: this sits in a sidebar chip.
+    assert summary["database"] == "shop.db"
+    assert summary["engine"] == "sqlite"
+    assert summary["engineLabel"]
+
+    # The same stamp is available when the thread is reopened.
+    convo = client.get(f"/api/conversations/{body['conversationId']}").json()
+    assert convo["database"] == "shop.db"
+
+
+def test_reconnecting_elsewhere_does_not_relabel_older_conversations(
+    client, db_path, tmp_path
+):
+    """The reason the database is stored per conversation rather than read from
+    the live connection: a session can move to another database while earlier
+    threads stay in the sidebar, and those threads describe the old data."""
+    connect(client, db_path)
+    first = client.post("/api/ask", json={"question": "Question on the first db"}).json()
+
+    second_path = str(tmp_path / "other.db")
+    conn = sqlite3.connect(second_path)
+    conn.executescript("CREATE TABLE Customer(id INTEGER PRIMARY KEY, companyName TEXT);")
+    conn.commit()
+    conn.close()
+
+    client.post("/api/disconnect")
+    connect(client, second_path)
+    client.post("/api/ask", json={"question": "Question on the second db"})
+
+    by_title = {c["title"]: c for c in client.get("/api/state").json()["conversations"]}
+    assert by_title["Question on the first db"]["database"] == "shop.db"
+    assert by_title["Question on the second db"]["database"] == "other.db"
+
+    # And reopening the older thread still reports the database it actually used.
+    convo = client.get(f"/api/conversations/{first['conversationId']}").json()
+    assert convo["database"] == "shop.db"
+
+
+def test_conversation_stamp_exposes_only_display_fields(client, db_path):
+    """The stamp reaches the browser, so it must carry nothing but display text.
+
+    Asserted as a whitelist rather than by grepping for a password: SQLite
+    needs no credentials, so a "password not present" check would pass here
+    even if the stamp did carry one. Pinning the exact key set is what
+    actually stops a host, user, or URL being added to it later.
+    """
+    connect(client, db_path)
+    client.post("/api/ask", json={"question": "List the customers"})
+
+    summary = client.get("/api/state").json()["conversations"][0]
+    assert set(summary) == {
+        "id",
+        "title",
+        "updated_at",
+        "message_count",
+        "database",
+        "engine",
+        "engineLabel",
+    }
+
+
+def test_connection_state_never_returns_the_password(client, tmp_path):
+    """A connected session's state must not echo credentials back to the client."""
+    settings_path = str(tmp_path / "creds.db")
+    sqlite3.connect(settings_path).close()
+
+    # Drive the session store directly: this asserts the shape of the response
+    # for a credentialed engine without needing a live Postgres to accept it.
+    session = session_module.store.create()
+    with session_module.use_session(session):
+        from connection import ConnectionSettings, DatabaseConnection
+
+        settings = ConnectionSettings(
+            engine="postgresql",
+            host="db.internal",
+            port=5432,
+            database="erp",
+            username="reporting",
+            password=SECRET,
+        )
+        session.connection = DatabaseConnection(settings)
+        state = server._connection_state(session)
+        conversation = session.new_conversation("Revenue last quarter")
+
+    # The password never leaves the server, in either payload.
+    assert SECRET not in f"{state} {conversation.summary()}"
+
+    # The connection card deliberately shows where the session is attached
+    # (host and user), but a conversation stamp is only ever a display name -
+    # it is repeated on every history row and has no reason to carry more.
+    stamp = str(conversation.summary())
+    assert "db.internal" not in stamp
+    assert "reporting" not in stamp
+    assert conversation.database == "erp"
+    assert conversation.engine_label == "PostgreSQL"
+
+
 # --- session isolation ----------------------------------------------------
 
 

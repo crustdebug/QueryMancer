@@ -21,9 +21,26 @@
 
   --live: oklch(0.7 0.16 150);
   --danger: oklch(0.55 0.18 25);
+
+  /* Type scale. Everything below is sized in rem against this, so the whole
+     interface scales from one number and respects the browser's font-size
+     setting instead of pinning text to device pixels. */
+  --step--2: 0.75rem;    /* 12px - fine print, counts, timestamps */
+  --step--1: 0.8125rem;  /* 13px - secondary labels */
+  --step-0: 0.9375rem;   /* 15px - body copy, table cells */
+  --step-1: 1rem;        /* 16px - message text, inputs */
+  --step-2: 1.125rem;    /* 18px - section titles */
+  --step-3: 1.5rem;      /* 24px - headings */
 }
 
 * { box-sizing: border-box; }
+
+html {
+  /* The base every rem resolves against. 17px reads comfortably at arm's
+     length on the 1080p+ displays this is used on; the mock's implicit 16px
+     rendered small enough that the whole page looked zoomed out. */
+  font-size: 17px;
+}
 
 html, body {
   margin: 0;
@@ -33,6 +50,8 @@ html, body {
 
 body {
   font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  font-size: var(--step-0);
+  line-height: 1.5;
   background: var(--bg);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
@@ -60,7 +79,7 @@ body {
 /* ---------- Sidebar ---------- */
 
 .sidebar {
-  width: 272px;
+  width: 17.5rem;
   flex-shrink: 0;
   background: var(--side);
   border-right: 1px solid var(--side-line);
@@ -92,7 +111,7 @@ body {
 }
 
 .brand-name {
-  font-size: 16px;
+  font-size: var(--step-2);
   font-weight: 600;
   color: white;
   letter-spacing: -0.01em;
@@ -115,7 +134,7 @@ body {
 }
 
 .conn-name {
-  font-size: 13px;
+  font-size: var(--step-0);
   font-weight: 600;
   color: white;
   overflow: hidden;
@@ -124,14 +143,14 @@ body {
 }
 
 .conn-meta {
-  font-size: 12px;
+  font-size: var(--step--1);
   color: var(--side-ink-soft);
   margin-bottom: 8px;
 }
 
 .dot {
-  width: 7px;
-  height: 7px;
+  width: 0.45rem;
+  height: 0.45rem;
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -145,25 +164,26 @@ body {
 }
 
 .conn-empty-title {
-  font-size: 13px;
+  font-size: var(--step-0);
   font-weight: 600;
   color: var(--side-ink);
   margin-bottom: 2px;
 }
 
 .conn-empty-sub {
-  font-size: 12px;
+  font-size: var(--step--1);
   color: oklch(0.58 0.02 250);
+  line-height: 1.4;
 }
 
 .sidebar-actions { padding: 0 16px 14px; }
 
 .sidebar-label {
   padding: 0 20px 8px;
-  font-size: 11px;
+  font-size: var(--step--2);
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: oklch(0.5 0.02 250);
+  color: oklch(0.55 0.02 250);
 }
 
 #sidebar-conversations {
@@ -198,18 +218,58 @@ body {
 .history-item.is-active { background: oklch(0.27 0.025 252); }
 
 .history-title {
-  font-size: 13px;
+  font-size: var(--step-0);
   font-weight: 500;
   color: oklch(0.9 0.01 250);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.35;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  min-width: 0;
 }
 
 .history-time {
-  font-size: 11.5px;
+  font-size: var(--step--2);
   color: oklch(0.55 0.02 250);
-  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+/* The database a conversation was asked against. Shown on every history row
+   because a session can reconnect elsewhere, making "which database was this?"
+   genuinely ambiguous when scanning past questions. */
+.history-db {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--step--2);
+  color: oklch(0.62 0.02 250);
+  min-width: 0;
+}
+
+.history-db-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.history-db-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.history-sep {
+  color: oklch(0.42 0.02 250);
+  flex-shrink: 0;
 }
 
 /* Schema panel */
@@ -229,10 +289,10 @@ body {
   border: none;
   color: var(--side-ink-soft);
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: var(--step--2);
   font-weight: 600;
   letter-spacing: 0.04em;
-  padding: 6px 10px;
+  padding: 7px 10px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -250,7 +310,7 @@ body {
 }
 
 .schema-row {
-  font-size: 12px;
+  font-size: var(--step--1);
   color: oklch(0.72 0.015 250);
   display: flex;
   justify-content: space-between;
@@ -280,23 +340,25 @@ body {
 }
 
 .topbar {
-  height: 60px;
+  min-height: 4rem;
   flex-shrink: 0;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 0 28px;
   background: var(--surface);
 }
 
 .header-title {
-  font-size: 15px;
+  font-size: var(--step-1);
   font-weight: 600;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .badge {
@@ -305,15 +367,29 @@ body {
   gap: 8px;
   background: oklch(0.95 0.01 250);
   border-radius: 20px;
-  padding: 6px 12px;
-  flex-shrink: 0;
+  padding: 7px 14px;
+  /* Must be allowed to shrink: the badge text can be an arbitrarily long
+     database name, and a rigid badge pushes itself off the right edge of the
+     viewport instead of ellipsing. */
+  min-width: 0;
+  max-width: 45%;
 }
 
 .badge span:last-child {
-  font-size: 12.5px;
+  font-size: var(--step--1);
   font-weight: 500;
-  color: oklch(0.4 0.02 250);
+  color: oklch(0.38 0.02 250);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+/* Viewing a conversation asked against a database other than the one attached
+   now: amber rather than the live green, since these answers describe data the
+   session is no longer connected to. */
+.badge.is-stale { background: oklch(0.95 0.04 85); }
+.badge.is-stale .dot-live { background: oklch(0.7 0.13 75); }
+.badge.is-stale span:last-child { color: oklch(0.42 0.06 70); }
 
 /* Connect view */
 
@@ -329,40 +405,41 @@ body {
 }
 
 .hero-mark {
-  width: 64px;
-  height: 64px;
+  width: 4rem;
+  height: 4rem;
   border-radius: 16px;
   background: var(--accent-wash);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: var(--step-3);
   font-weight: 700;
   color: var(--accent);
 }
 
 .hero-copy {
   text-align: center;
-  max-width: 440px;
+  max-width: 32rem;
 }
 
 .hero-copy h1 {
-  font-size: 23px;
+  font-size: var(--step-3);
   font-weight: 600;
-  margin: 0 0 8px;
-  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
 }
 
 .hero-copy p {
-  font-size: 15px;
+  font-size: var(--step-1);
   color: var(--ink-soft);
-  line-height: 1.5;
+  line-height: 1.55;
   margin: 0;
 }
 
 .engine-grid {
   display: grid;
-  grid-template-columns: repeat(3, 148px);
+  grid-template-columns: repeat(3, 10rem);
   gap: 12px;
   margin-top: 8px;
 }
@@ -386,19 +463,19 @@ body {
 }
 
 .engine-initials {
-  width: 40px;
-  height: 40px;
+  width: 2.75rem;
+  height: 2.75rem;
   border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--step-0);
 }
 
 .engine-name {
-  font-size: 13px;
+  font-size: var(--step-0);
   font-weight: 500;
   margin-top: 10px;
   color: oklch(0.3 0.02 245);
@@ -416,10 +493,19 @@ body {
 .chat-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px 8px;
+  padding: 28px 28px 8px;
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+/* Keep the conversation aligned with the composer below it, so bubbles and the
+   input box share one column rather than the text drifting wider than the box
+   the reply was typed into. */
+.chat-scroll > * {
+  width: 100%;
+  max-width: 56rem;
+  margin: 0 auto;
 }
 
 .suggestions {
@@ -433,7 +519,7 @@ body {
 }
 
 .suggestions-title {
-  font-size: 17px;
+  font-size: var(--step-2);
   font-weight: 600;
   color: oklch(0.35 0.02 245);
 }
@@ -441,9 +527,9 @@ body {
 .suggestion-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
-  max-width: 420px;
+  max-width: 32rem;
 }
 
 .suggestion {
@@ -451,8 +537,9 @@ body {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 12px 14px;
-  font-size: 13.5px;
+  padding: 13px 16px;
+  font-size: var(--step-0);
+  line-height: 1.45;
   font-family: inherit;
   color: oklch(0.35 0.02 245);
   cursor: pointer;
@@ -475,46 +562,56 @@ body {
 .row-assistant { justify-content: flex-start; }
 
 .bubble-user {
-  max-width: 70%;
+  max-width: 72%;
   background: var(--accent);
   color: white;
-  padding: 11px 16px;
+  padding: 12px 17px;
   border-radius: 14px 14px 3px 14px;
-  font-size: 14.5px;
+  font-size: var(--step-1);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .bubble-assistant {
-  max-width: 80%;
+  /* Effectively the whole column: an assistant reply can carry a wide result
+     table or chart, and capping it well below the column width wastes the
+     space those need while leaving an odd gutter on the right. */
+  max-width: 100%;
   background: var(--surface);
   border: 1px solid oklch(0.9 0.006 240);
   border-radius: 3px 14px 14px 14px;
-  padding: 16px 18px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 13px;
   min-width: 0;
 }
 
 .bubble-assistant.is-error { border-color: oklch(0.85 0.08 25); }
 
 .answer {
-  font-size: 14.5px;
-  line-height: 1.55;
+  font-size: var(--step-1);
+  line-height: 1.6;
   color: oklch(0.26 0.02 245);
   word-break: break-word;
 }
 
-.answer p { margin: 0 0 8px; }
+.answer p { margin: 0 0 10px; }
 .answer p:last-child { margin-bottom: 0; }
-.answer ul, .answer ol { margin: 0 0 8px; padding-left: 20px; }
-.answer li { margin-bottom: 3px; }
+.answer ul, .answer ol { margin: 0 0 10px; padding-left: 22px; }
+.answer li { margin-bottom: 5px; }
 .answer strong { font-weight: 600; }
+.answer h3, .answer h4, .answer h5, .answer h6 {
+  font-size: var(--step-2);
+  font-weight: 600;
+  margin: 12px 0 6px;
+  line-height: 1.3;
+}
+.answer h3:first-child, .answer h4:first-child { margin-top: 0; }
 .answer code {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 12.5px;
+  font-size: 0.9em;
   background: oklch(0.95 0.006 240);
   padding: 1px 5px;
   border-radius: 4px;
@@ -523,13 +620,13 @@ body {
 .answer table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 13px;
-  margin: 4px 0 8px;
+  font-size: var(--step-0);
+  margin: 6px 0 10px;
 }
 
 .answer th, .answer td {
   text-align: left;
-  padding: 6px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -541,13 +638,13 @@ body {
   border: 1px solid oklch(0.91 0.006 240);
   border-radius: 8px;
   overflow: auto;
-  max-height: 340px;
+  max-height: 24rem;
 }
 
 .result-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 13px;
+  font-size: var(--step-0);
 }
 
 .result-table thead tr { background: oklch(0.96 0.006 240); }
@@ -575,9 +672,9 @@ body {
 .result-table tbody tr:hover { background: oklch(0.985 0.004 240); }
 
 .result-note {
-  font-size: 11.5px;
+  font-size: var(--step--2);
   color: var(--ink-faint);
-  margin-top: 6px;
+  margin-top: 7px;
 }
 
 /* Chart */
@@ -586,7 +683,7 @@ body {
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  height: 130px;
+  height: 9.5rem;
   padding: 8px 4px 0;
 }
 
@@ -602,8 +699,8 @@ body {
 }
 
 .chart-value {
-  font-size: 11.5px;
-  color: oklch(0.5 0.016 245);
+  font-size: var(--step--2);
+  color: oklch(0.48 0.016 245);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -618,8 +715,8 @@ body {
 }
 
 .chart-label {
-  font-size: 11.5px;
-  color: oklch(0.55 0.016 245);
+  font-size: var(--step--2);
+  color: oklch(0.52 0.016 245);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -632,7 +729,7 @@ body {
   background: none;
   border: none;
   padding: 0;
-  font-size: 12.5px;
+  font-size: var(--step--1);
   font-weight: 600;
   color: var(--accent);
   cursor: pointer;
@@ -643,24 +740,24 @@ body {
 }
 
 .sql-block {
-  margin: 8px 0 0;
+  margin: 9px 0 0;
   background: oklch(0.19 0.02 250);
   color: oklch(0.85 0.03 150);
-  padding: 12px 14px;
+  padding: 14px 16px;
   border-radius: 8px;
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 12.5px;
+  font-size: var(--step--1);
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre-wrap;
 }
 
 .corrections {
-  font-size: 11.5px;
-  color: oklch(0.5 0.05 70);
+  font-size: var(--step--1);
+  color: oklch(0.45 0.05 70);
   background: oklch(0.97 0.03 90);
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 9px 12px;
   line-height: 1.5;
 }
 
@@ -694,38 +791,55 @@ body {
   flex-shrink: 0;
   border-top: 1px solid var(--line);
   background: var(--surface);
-  padding: 14px 28px 16px;
+  padding: 16px 28px 18px;
 }
 
-.composer-row {
+/* The whole composer is one card, with the textarea and send button living
+   inside it, rather than a small input sitting next to a separate button. It
+   shares the chat column's width so the box lines up with the messages above.
+   The focus ring moves to this wrapper via :focus-within, so the card as a
+   whole reads as the thing being typed into. */
+.composer-box {
+  max-width: 56rem;
+  margin: 0 auto;
   display: flex;
-  gap: 10px;
   align-items: flex-end;
-  max-width: 900px;
+  gap: 12px;
+  background: oklch(0.99 0.002 240);
+  border: 1px solid oklch(0.87 0.006 240);
+  border-radius: 14px;
+  padding: 12px 12px 12px 18px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px oklch(0.5 0.14 255 / 0.12);
 }
 
 #input {
   flex: 1;
   resize: none;
-  border: 1px solid oklch(0.87 0.006 240);
-  border-radius: 10px;
-  padding: 11px 14px;
+  border: none;
+  background: none;
+  padding: 8px 0;
   font-family: inherit;
-  font-size: 14px;
+  font-size: var(--step-1);
   color: oklch(0.26 0.02 245);
-  background: oklch(0.99 0.002 240);
-  line-height: 1.4;
-  max-height: 180px;
+  line-height: 1.5;
+  /* Roughly eight lines before it starts scrolling internally. */
+  max-height: 13rem;
   overflow-y: auto;
 }
 
-#input:focus { outline: none; border-color: var(--accent); }
-#input::placeholder { color: oklch(0.6 0.01 245); }
+#input:focus { outline: none; }
+#input::placeholder { color: oklch(0.62 0.01 245); }
 
 .composer-hint {
-  font-size: 11.5px;
+  max-width: 56rem;
+  margin: 8px auto 0;
+  font-size: var(--step--2);
   color: var(--ink-faint);
-  margin-top: 6px;
 }
 
 /* Buttons */
@@ -735,8 +849,8 @@ body {
   color: white;
   border: none;
   border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 13px;
+  padding: 11px 14px;
+  font-size: var(--step-0);
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -752,9 +866,9 @@ body {
 
 .primary-button.send {
   width: auto;
-  padding: 11px 20px;
+  padding: 11px 22px;
   border-radius: 10px;
-  font-size: 13.5px;
+  font-size: var(--step-0);
   flex-shrink: 0;
 }
 
@@ -763,8 +877,8 @@ body {
   border: 1px solid var(--line);
   color: oklch(0.35 0.02 245);
   border-radius: 8px;
-  padding: 9px 16px;
-  font-size: 13.5px;
+  padding: 10px 17px;
+  font-size: var(--step-0);
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -776,7 +890,7 @@ body {
   background: none;
   border: none;
   color: oklch(0.68 0.02 250);
-  font-size: 12px;
+  font-size: var(--step--1);
   font-family: inherit;
   cursor: pointer;
   padding: 0;
@@ -787,7 +901,7 @@ body {
 
 .link-button.muted {
   color: var(--ink-soft);
-  font-size: 13px;
+  font-size: var(--step-0);
 }
 
 .link-button.muted:hover { color: var(--accent); }
@@ -807,13 +921,13 @@ body {
 }
 
 .modal {
-  width: 440px;
+  width: 30rem;
   max-width: 100%;
   max-height: 92vh;
   overflow-y: auto;
   background: var(--surface);
   border-radius: 14px;
-  padding: 26px;
+  padding: 28px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -827,8 +941,8 @@ body {
 }
 
 .modal-mark {
-  width: 38px;
-  height: 38px;
+  width: 2.5rem;
+  height: 2.5rem;
   border-radius: 9px;
   background: var(--accent);
   display: flex;
@@ -836,11 +950,11 @@ body {
   justify-content: center;
   color: white;
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--step-0);
   flex-shrink: 0;
 }
 
-.modal-title { font-size: 16px; font-weight: 600; }
+.modal-title { font-size: var(--step-2); font-weight: 600; }
 
 #connect-form {
   display: flex;
@@ -854,19 +968,19 @@ body {
 
 .field label {
   display: block;
-  font-size: 12.5px;
+  font-size: var(--step--1);
   font-weight: 600;
   color: oklch(0.4 0.016 245);
-  margin-bottom: 5px;
+  margin-bottom: 6px;
 }
 
 .field input {
   width: 100%;
   border: 1px solid oklch(0.87 0.006 240);
   border-radius: 8px;
-  padding: 9px 12px;
+  padding: 10px 13px;
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: var(--step-0);
   color: var(--ink);
 }
 
@@ -874,28 +988,28 @@ body {
 .field input.is-invalid { border-color: var(--danger); }
 
 .field-help {
-  font-size: 11.5px;
+  font-size: var(--step--2);
   color: var(--ink-faint);
-  margin-top: 5px;
-  line-height: 1.4;
+  margin-top: 6px;
+  line-height: 1.45;
 }
 
 .modal-note {
-  font-size: 12px;
+  font-size: var(--step--1);
   color: var(--ink-soft);
   background: oklch(0.96 0.006 240);
   border-radius: 8px;
-  padding: 10px 12px;
-  line-height: 1.45;
+  padding: 11px 13px;
+  line-height: 1.5;
 }
 
 .modal-error {
-  font-size: 12.5px;
+  font-size: var(--step--1);
   color: var(--danger);
   background: oklch(0.97 0.03 25);
   border-radius: 8px;
-  padding: 10px 12px;
-  line-height: 1.45;
+  padding: 11px 13px;
+  line-height: 1.5;
   word-break: break-word;
 }
 
@@ -906,11 +1020,11 @@ body {
 }
 
 .modal-actions .spacer { flex: 1; }
-.modal-actions .primary-button { width: auto; padding: 9px 18px; }
+.modal-actions .primary-button { width: auto; padding: 10px 20px; }
 
 .spinner {
-  width: 13px;
-  height: 13px;
+  width: 0.8rem;
+  height: 0.8rem;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.4);
   border-top-color: white;
@@ -922,10 +1036,20 @@ body {
 
 /* Narrow screens */
 
-@media (max-width: 820px) {
-  .sidebar { width: 208px; }
-  .engine-grid { grid-template-columns: repeat(2, 148px); }
-  .bubble-user, .bubble-assistant { max-width: 92%; }
+@media (max-width: 1000px) {
+  /* Step the base size down rather than overriding each rule: every size in
+     the sheet is a rem, so one change rescales the whole interface. */
+  html { font-size: 16px; }
+  .sidebar { width: 14.5rem; }
+  .engine-grid { grid-template-columns: repeat(2, 10rem); }
+  .bubble-user, .bubble-assistant { max-width: 94%; }
   .chat-scroll, .composer { padding-left: 16px; padding-right: 16px; }
   .topbar { padding: 0 16px; }
+}
+
+@media (max-width: 680px) {
+  html { font-size: 15px; }
+  .sidebar { display: none; }
+  .engine-grid { grid-template-columns: repeat(2, 1fr); width: 100%; }
+  .composer-hint { display: none; }
 }

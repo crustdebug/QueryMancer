@@ -246,3 +246,42 @@ def test_failed_connection_message_carries_no_password():
     )
     assert not ok
     assert SECRET not in message
+
+
+# --- short display names --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "database,expected",
+    [
+        (r"C:\Users\me\data\shop.db", "shop.db"),
+        ("/var/lib/app/production.sqlite", "production.sqlite"),
+        ("shop.db", "shop.db"),
+        ("", "(no file)"),
+    ],
+)
+def test_sqlite_display_name_is_just_the_file(database, expected):
+    """A SQLite path is far too long for a sidebar chip; the file name is what
+    identifies it. Both separators are handled regardless of the host OS."""
+    settings = ConnectionSettings(engine="sqlite", database=database)
+    assert settings.display_name == expected
+
+
+def test_server_engine_display_name_is_the_database_name():
+    settings = ConnectionSettings(
+        engine="postgresql", host="db.internal", port=5432,
+        database="erp", username="reporting", password=SECRET,
+    )
+    assert settings.display_name == "erp"
+
+
+def test_display_name_falls_back_to_host_when_no_database_is_named():
+    settings = ConnectionSettings(engine="postgresql", host="db.internal", database="")
+    assert settings.display_name == "db.internal"
+
+
+def test_display_name_never_contains_the_password():
+    settings = ConnectionSettings(
+        engine="mysql", host="h", database="sales", username="u", password=SECRET,
+    )
+    assert SECRET not in settings.display_name

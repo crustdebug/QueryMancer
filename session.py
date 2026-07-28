@@ -58,6 +58,18 @@ class Conversation:
     messages: List[Message] = field(default_factory=list)
     # The LangChain message history backing this conversation.
     history: list = field(default_factory=list)
+    # Which database answered this conversation, captured when it was created.
+    # A session can reconnect to a different database while older conversations
+    # remain in the sidebar, so this is stored per conversation rather than read
+    # from the live connection - otherwise revisiting an old thread would label
+    # it with whatever database happens to be attached now.
+    #
+    # Display strings only (name and engine label). No host, user, or password:
+    # these travel to the browser, and connection details are not the client's
+    # business. See _connection_state in server.py.
+    database: str = ""
+    engine: str = ""
+    engine_label: str = ""
 
     def summary(self) -> dict:
         return {
@@ -65,6 +77,9 @@ class Conversation:
             "title": self.title,
             "updated_at": self.updated_at,
             "message_count": len(self.messages),
+            "database": self.database,
+            "engine": self.engine,
+            "engineLabel": self.engine_label,
         }
 
     def to_dict(self) -> dict:
@@ -87,6 +102,14 @@ class Session:
 
     def new_conversation(self, title: str = "New question") -> Conversation:
         conversation = Conversation(id=secrets.token_urlsafe(9), title=title)
+        # Stamp the database now, while we know which one is attached. Doing it
+        # here rather than at the call sites means every way of starting a
+        # conversation records it, including future ones.
+        settings = self.connection.settings if self.connection is not None else None
+        if settings is not None:
+            conversation.database = settings.display_name
+            conversation.engine = settings.engine
+            conversation.engine_label = settings.label
         self.conversations[conversation.id] = conversation
         self.order.insert(0, conversation.id)
         return conversation

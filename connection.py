@@ -17,6 +17,7 @@ Credential handling is deliberately strict:
 
 import re
 from dataclasses import dataclass, field, replace
+from pathlib import PurePath
 from typing import Dict, List, Optional
 from urllib.parse import quote_plus, urlparse
 
@@ -149,6 +150,23 @@ class ConnectionSettings:
     @property
     def label(self) -> str:
         return self.spec["label"]
+
+    @property
+    def display_name(self) -> str:
+        """A short name for this database, for chips and headings.
+
+        SQLite databases are file paths, which are far too long to sit in a
+        sidebar row or a header badge - the file name is the part that
+        identifies it. Server engines already use a short database name, and
+        fall back to the host for the rare connection that omits one.
+        """
+        if self.engine == "sqlite":
+            if not self.database:
+                return "(no file)"
+            # PurePath handles both separators regardless of the host OS, so a
+            # POSIX path still shortens correctly on Windows and vice versa.
+            return PurePath(self.database.replace("\\", "/")).name or self.database
+        return self.database or self.host
 
     def url(self, hide_password: bool = False) -> str:
         """The SQLAlchemy URL. Set hide_password for anything user-visible."""
