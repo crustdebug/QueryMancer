@@ -1,0 +1,8 @@
+streamlit
+langchain
+ollama
+rich
+dotenv
+psycopg2-binary
+altair
+pandas

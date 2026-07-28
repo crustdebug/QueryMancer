@@ -1,0 +1,49 @@
+
+/* General Body Styles */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #0E1117;
+    color: #FAFAFA;
+}
+
+/* Main header */
+h1 {
+    color: #0EA5E9; /* Light Blue */
+    text-align: center;
+}
+
+/* Subheader */
+h2, h3, h4, h5, h6 {
+    color: #A0AEC0; /* Gray */
+}
+
+/* Streamlit specific classes */
+.stApp {
+    background-color: #0E1117;
+}
+
+.stTextInput > div > div > input {
+    background-color: #1E293B; /* Darker Blue-Gray */
+    color: #FAFAFA;
+    border: 1px solid #3B82F6; /* Blue */
+}
+
+.stButton > button {
+    background-color: #3B82F6; /* Blue */
+    color: #FFFFFF;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 0.25rem;
+}
+
+.stChatMessage {
+    background-color: #1E293B; /* Darker Blue-Gray */
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+/* Sidebar styles */
+.css-1d391kg {
+    background-color: #1E293B !important; /* Darker Blue-Gray */
+}
