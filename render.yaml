@@ -23,19 +23,24 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
-      # Generated once by Render and kept across deploys. Visitors need this
-      # code to reach the app; read it from the dashboard and share it with
-      # whoever should have access. Remove this block to run fully open.
+      # Access code. Empty means the demo is open to anyone with the URL,
+      # which is usually what a portfolio demo wants - visitors connect their
+      # own database, and the app writes nothing.
+      #
+      # To lock it: set a value in the dashboard (Environment tab). Declared
+      # with an empty default rather than generateValue so the dashboard owns
+      # the value - a generated one fights with edits made there, and an
+      # unset-but-declared variable can block a blueprint sync.
       - key: QUERYMANCER_ACCESS_CODE
-        generateValue: true
+        value: ""
       # Render terminates TLS at its edge and forwards over plain HTTP, so
       # the app sees http:// internally. It honours X-Forwarded-Proto, but
       # forcing the flag on removes any doubt for a public deployment.
       - key: QUERYMANCER_FORCE_SECURE_COOKIE
         value: "1"
       # Set these in the dashboard, not here - never commit an API key.
-      # Comma-separated values are supported for key rotation.
+      # Comma-separated values are supported for key rotation. GOOGLE_API_KEY
+      # is the only one the app needs to answer questions; GROQ_API_KEY is an
+      # optional fallback for when Gemini's free quota runs out.
       - key: GOOGLE_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
         sync: false
