@@ -12,7 +12,7 @@ from agent import ask, create_history  # noqa: E402
 from config import Config  # noqa: E402
 from key_pool import PoolExhausted  # noqa: E402
 from models import RotatingChatModel  # noqa: E402
-from tools import allowed_tables, get_available_tools, with_sql_cursor  # noqa: E402
+from tools import clear_schema_cache, get_available_tools, get_schema  # noqa: E402
 
 LOADING_MESSAGES = [
     "Consulting the ancient tomes of SQL wisdom...",
@@ -57,31 +57,12 @@ def get_model() -> RotatingChatModel:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_table_overview():
-    """Table names and row counts for the sidebar, refreshed every 5 minutes."""
-    allowed = allowed_tables()
-    with with_sql_cursor() as cursor:
-        if allowed:
-            cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' AND lower(table_name) IN %s "
-                "ORDER BY table_name;",
-                (tuple(sorted(allowed)),),
-            )
-        else:
-            cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'public' ORDER BY table_name;"
-            )
-        names = [row[0] for row in cursor.fetchall()]
-
-        # An estimate from the planner's statistics, which is effectively free.
-        # COUNT(*) on every table would scan the whole database on each load.
-        cursor.execute(
-            "SELECT relname, GREATEST(n_live_tup, 0) FROM pg_stat_user_tables "
-            "WHERE schemaname = 'public';"
-        )
-        counts = dict(cursor.fetchall())
-    return [(name, counts.get(name)) for name in names]
+    """Every readable table with its estimated size, for the sidebar."""
+    db = get_schema()
+    return [
+        (table.qualified, table.estimated_rows, len(table.columns))
+        for table in sorted(db.tables, key=lambda t: (-t.estimated_rows, t.name.lower()))
+    ]
 
 
 def load_css(css_file):
@@ -107,11 +88,15 @@ with st.sidebar:
 
     try:
         tables = load_table_overview()
-        st.write(f"**Tables:** {len(tables)}")
+        st.write(f"**Tables:** {len(tables)} (all readable)")
         with st.expander("Show tables"):
-            for name, count in tables:
-                label = f"{count:,} rows" if count is not None else "unknown size"
-                st.write(f"- {name} ({label})")
+            for name, rows, columns in tables:
+                size = f"~{rows:,} rows" if rows else "empty"
+                st.write(f"- {name} — {size}, {columns} cols")
+        if st.button("Reload schema"):
+            clear_schema_cache()
+            load_table_overview.clear()
+            st.rerun()
     except Exception as error:  # noqa: BLE001
         st.error(f"Cannot reach the database: {error}")
 

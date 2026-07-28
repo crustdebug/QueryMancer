@@ -4,6 +4,10 @@ Ask questions about a PostgreSQL database in plain English. An LLM agent
 explores the schema with read-only tools, writes the SQL itself, runs it, and
 answers in Markdown.
 
+Point it at **any** database and it works: the schema is discovered at runtime,
+so nothing about your tables is hardcoded. Change `POSTGRES_DB` in `.env` and
+restart — there is no schema list to maintain.
+
 ## Setup
 
 ```bash
@@ -15,11 +19,14 @@ cp .env.example .env          # then fill in your database and API keys
 streamlit run app.py
 ```
 
-Optional, for the fuzzy-search tools:
+Then check everything is wired up:
 
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```bash
+python check_setup.py
 ```
+
+It reports how many tables the agent can see, how many API keys are in
+rotation, and makes one live model call to confirm the whole path works.
 
 ## Using several free API keys
 
@@ -60,36 +67,82 @@ so the defaults in [config.py](config.py) target that directly:
 | `MAX_SQL_RESULT_ROWS` | 50 | Caps rows returned to the model |
 | `MAX_HISTORY_MESSAGES` | 12 | Drops old turns so prompts stay flat |
 
-Schema lookups (`list_tables`, `describe_table`,
-`get_foreign_key_relationships`) are cached in memory for the process, so
-repeated questions about the same tables cost no extra requests. The system
-prompt also tells the model to reuse schemas already in the conversation rather
-than re-fetching them.
+The whole schema is read once and cached for the process, so `inspect_database`
+and `describe_table` cost no extra database round trips and no extra LLM calls
+on repeat questions. The system prompt also tells the model to reuse schema
+information already visible in the conversation rather than re-fetching it.
 
 If you hit limits often, lower `MAX_AGENT_ITERATIONS` to 5 and switch
 `Config.MODEL` to `GEMINI_FLASH_LITE`, which has a larger free allowance.
 
+## Working with an unfamiliar database
+
+The agent has no built-in knowledge of your schema. [schema.py](schema.py) reads
+the catalog on first use — every table, column, type, primary key, foreign key
+and row estimate, across all non-system schemas — and caches it. A single
+`inspect_database` call then orients the model, replacing a chain of
+list-tables/describe-table round trips.
+
+### Wrong names are corrected automatically
+
+An LLM writing SQL for an unseen database guesses names from convention: it
+writes `customers.customer_name` where your database has `"Customer"."name"`.
+[sql_repair.py](sql_repair.py) maps the guess onto what actually exists before
+the query runs, and tells the model what it changed so the rest of the
+conversation uses the real names. A real example against a Prisma schema:
+
+```sql
+-- the model wrote
+SELECT c.company_name, sum(o.total_amount)
+FROM customers c JOIN sales_orders o ON o.customer_id = c.id
+GROUP BY c.company_name
+
+-- what actually ran
+SELECT c."companyName", sum(o."totalAmount")
+FROM "Customer" c JOIN "SalesOrder" o ON o."customerId" = c.id
+GROUP BY c."companyName"
+```
+
+This handles snake_case ↔ camelCase ↔ PascalCase, singular/plural, and
+Postgres's case-folding rule (an unquoted `Customer` means `customer`, so
+mixed-case names must be quoted). Matching is fuzzy above
+`Config.NAME_MATCH_CUTOFF`; below it the name is left alone and reported as
+unresolved with suggestions, rather than being silently changed to something
+wrong. Bare unqualified columns are deliberately not rewritten — that needs
+scope analysis a regex cannot do safely — but Postgres's own "did you mean"
+hint is passed back to the model, which recovers on the next step.
+
+Don't know where a value lives? `find_value` searches label-like text columns
+across the database and reports which table and column contains it.
+
+If you change the schema while the app is running, click **Reload schema** in
+the sidebar.
+
 ## Accuracy
 
-The agent is steered toward correctness by construction rather than by asking
-nicely: it must call `describe_table` before writing SQL against a table, must
-call `get_foreign_key_relationships` before a JOIN, and is told to check real
-values with `get_distinct_column_values` before filtering on a category.
-`temperature` is 0 for every model.
+Correctness is enforced by construction rather than by asking nicely: the model
+must inspect the schema before writing SQL, joins use the discovered foreign
+keys, and `get_distinct_column_values` supplies real category labels before a
+`WHERE` clause is written. `temperature` is 0 for every model.
 
 ## Safety
 
-Queries run in a PostgreSQL **read-only session**, so writes are rejected by
-the database itself. On top of that, `execute_sql` accepts only a single
-`SELECT`/`WITH` statement, and every tool checks the requested table against
-`Config.ALLOWED_TABLES`. Set that list to `[]` to allow the whole `public`
-schema.
+Queries run in a PostgreSQL **read-only session**, so the database itself
+rejects any write — that is the real guarantee, not a keyword filter. On top of
+that, `execute_sql` accepts only a single `SELECT`/`WITH` statement, with string
+literals and comments stripped before the check so a column named `updated_by`
+or a literal containing `DELETE` is not misread as a write.
+
+Within read-only, access is **unrestricted**: every table, column and row the
+database user can see. The agent is as trusted as the credentials in your
+`.env`, so point it at a user with only the privileges you want exposed — a
+read-only role scoped to the right schemas is the right control here.
 
 ## Configuration
 
 Everything is in [config.py](config.py): `MODEL` and `FALLBACK_MODELS` choose
-the models, `ALLOWED_TABLES` restricts access, and the limits above control
-spend.
+the models, `NAME_MATCH_CUTOFF` tunes how aggressively names are corrected, and
+the limits above control spend.
 
 ## Tests
 
@@ -97,5 +150,6 @@ spend.
 pytest
 ```
 
-The suite covers key rotation, failover, read-only enforcement, and the agent
-loop. It uses a stub model and needs no database or API key.
+The suite covers key rotation and failover, read-only enforcement, schema
+discovery, name resolution across naming conventions, and the agent loop. It
+uses a stub model and an in-memory schema, so it needs no database or API key.

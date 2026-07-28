@@ -33,7 +33,7 @@ def test_direct_answer_needs_one_call():
 def test_tool_call_is_executed_and_fed_back(monkeypatch):
     tool_response = AIMessage(
         content="",
-        tool_calls=[{"name": "list_tables", "args": {"reasoning": "need names"}, "id": "call_1"}],
+        tool_calls=[{"name": "inspect_database", "args": {"reasoning": "need names"}, "id": "call_1"}],
     )
     model = StubModel([tool_response, AIMessage(content="Found 3 tables.")])
     monkeypatch.setattr(
@@ -51,7 +51,7 @@ def test_tool_call_is_executed_and_fed_back(monkeypatch):
 def test_iteration_limit_still_produces_an_answer(monkeypatch):
     looping = AIMessage(
         content="",
-        tool_calls=[{"name": "list_tables", "args": {"reasoning": "again"}, "id": "x"}],
+        tool_calls=[{"name": "inspect_database", "args": {"reasoning": "again"}, "id": "x"}],
     )
     # Always asks for a tool, then one final answer after the limit is hit.
     model = StubModel([looping] * 3 + [AIMessage(content="Partial answer.")])

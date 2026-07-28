@@ -1,21 +1,18 @@
 """Read-only database tools exposed to the agent.
 
-Three concerns run through this module:
+The tools work against any PostgreSQL database without configuration. Nothing
+about the schema is hardcoded: table and column names are discovered at runtime
+(see schema.py), and names the model guesses wrong are mapped onto the real ones
+(see sql_repair.py) instead of failing.
 
-  * Safety - every query runs in a Postgres read-only session, identifiers are
-    quoted through psycopg2's `sql` builder, and access is restricted to the
-    tables named in Config.ALLOWED_TABLES.
-  * Token economy - schema lookups are cached, and every tool result is capped
-    before it re-enters the prompt. Tool output dominates an agent's token bill,
-    so this is where most of the savings are.
-  * Legibility - results are returned as compact tables the model can read
-    without burning tokens on repeated column names.
+Access is read-only but otherwise unrestricted - every table, column and row in
+every non-system schema is readable. Writes are refused by the Postgres session
+itself, not merely by a check here.
 """
 
 import re
-import threading
 from contextlib import contextmanager
-from typing import Any, Iterable, List, Optional, Sequence, Set
+from typing import Any, List, Optional, Sequence
 
 import psycopg2
 from psycopg2 import sql
@@ -23,8 +20,11 @@ from langchain_core.messages import ToolMessage
 from langchain_core.messages.tool import ToolCall
 from langchain_core.tools import BaseTool, tool
 
+import schema as schema_module
 from config import Config
 from custom_logging import log, log_panel
+from schema import DatabaseSchema, Table, quote_identifier
+from sql_repair import repair_sql, suggest_for_error
 
 # --- Tool Management ---
 
@@ -32,15 +32,13 @@ from custom_logging import log, log_panel
 def get_available_tools() -> List[BaseTool]:
     """Returns a list of all available tool instances."""
     return [
-        list_tables,
-        sample_table,
+        inspect_database,
         describe_table,
+        sample_table,
         execute_sql,
-        fuzzy_full_text_search,
-        get_foreign_key_relationships,
+        find_value,
         get_distinct_column_values,
         explain_query,
-        search_entity_by_name,
     ]
 
 
@@ -50,7 +48,7 @@ def call_tool(tool_call: ToolCall) -> ToolMessage:
     name = tool_call["name"]
     if name not in tools_by_name:
         return ToolMessage(
-            content=f"Error: Tool '{name}' not found.",
+            content=f"Error: Tool '{name}' not found. Available: {', '.join(tools_by_name)}",
             tool_call_id=tool_call["id"],
         )
     try:
@@ -81,72 +79,8 @@ def format_rows(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
     return f"{header}\n{body}\n({len(rows)} row(s))"
 
 
-# --- Access control -------------------------------------------------------
+# --- Read-only enforcement ------------------------------------------------
 
-# Matches identifiers following FROM / JOIN / UPDATE / INTO, optionally
-# schema-qualified and optionally double-quoted.
-_TABLE_REF = re.compile(
-    r"""(?:\bfrom\b|\bjoin\b|\binto\b|\bupdate\b)\s+
-        (?:"(?P<quoted>[^"]+)"|(?P<plain>[A-Za-z_][A-Za-z0-9_$]*))
-        (?:\s*\.\s*(?:"(?P<quoted2>[^"]+)"|(?P<plain2>[A-Za-z_][A-Za-z0-9_$]*)))?
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-
-def allowed_tables() -> Optional[Set[str]]:
-    """The permitted table names, or None when no restriction is configured."""
-    if not Config.ALLOWED_TABLES:
-        return None
-    return {name.lower() for name in Config.ALLOWED_TABLES}
-
-
-def check_table_allowed(table_name: str) -> Optional[str]:
-    """Return an error message if `table_name` is off limits, else None."""
-    allowed = allowed_tables()
-    if allowed is None or table_name.lower() in allowed:
-        return None
-    return (
-        f"Error: Access to table '{table_name}' is not permitted. "
-        f"Use list_tables to see the tables you may query."
-    )
-
-
-def referenced_tables(sql_query: str) -> Set[str]:
-    """Best-effort extraction of table names referenced by a query."""
-    found: Set[str] = set()
-    for match in _TABLE_REF.finditer(sql_query):
-        # A schema-qualified name puts the table in the second group.
-        table = match.group("quoted2") or match.group("plain2")
-        if not table:
-            table = match.group("quoted") or match.group("plain")
-        if table:
-            found.add(table.lower())
-    # Common table expressions are not real tables; drop names defined by WITH.
-    for cte in re.finditer(r"\bwith\s+([A-Za-z_][A-Za-z0-9_$]*)\s+as\s*\(", sql_query, re.I):
-        found.discard(cte.group(1).lower())
-    for cte in re.finditer(r",\s*([A-Za-z_][A-Za-z0-9_$]*)\s+as\s*\(", sql_query, re.I):
-        found.discard(cte.group(1).lower())
-    return found
-
-
-def check_query_allowed(sql_query: str) -> Optional[str]:
-    """Reject a query that touches tables outside the allowlist."""
-    allowed = allowed_tables()
-    if allowed is None:
-        return None
-    forbidden = sorted(referenced_tables(sql_query) - allowed)
-    if forbidden:
-        return (
-            f"Error: This query references table(s) you may not access: "
-            f"{', '.join(forbidden)}. Use list_tables to see permitted tables."
-        )
-    return None
-
-
-# A statement must start with SELECT or WITH; anything else is rejected before
-# it reaches the database. The read-only session is the real guarantee, but
-# failing early gives the model a clearer error to correct against.
 _READ_ONLY_START = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 _WRITE_STATEMENT = re.compile(
     r"^\s*(insert|update|delete|drop|create|alter|truncate|grant|revoke|copy|call|do)\b",
@@ -175,7 +109,7 @@ def check_read_only(sql_query: str) -> Optional[str]:
     return None
 
 
-# --- SECURE DATABASE CONNECTION ---
+# --- Database connection --------------------------------------------------
 
 
 @contextmanager
@@ -191,7 +125,7 @@ def with_sql_cursor(readonly: bool = True):
             port=Config.Postgres.port,
             connect_timeout=10,
         )
-        # Enforce a read-only session. The DB will reject INSERT, UPDATE, etc.
+        # The database refuses writes regardless of what the agent sends.
         conn.set_session(readonly=readonly, autocommit=False)
         cur = conn.cursor()
         try:
@@ -203,115 +137,101 @@ def with_sql_cursor(readonly: bool = True):
             conn.close()
 
 
-# --- Schema cache ---------------------------------------------------------
-#
-# The schema does not change during a conversation, so repeated list_tables and
-# describe_table calls are served from memory. This removes whole LLM round
-# trips worth of latency and, more importantly, avoids re-billing the same
-# schema text on every question.
-
-_cache: dict = {}
-_cache_lock = threading.Lock()
-
-
-def cached(key: str, producer):
-    with _cache_lock:
-        if key in _cache:
-            return _cache[key]
-    value = producer()
-    with _cache_lock:
-        _cache[key] = value
-    return value
+def get_schema(refresh: bool = False) -> DatabaseSchema:
+    """The live schema, read once and cached for the process."""
+    with with_sql_cursor() as cursor:
+        return schema_module.load_schema(cursor, refresh=refresh)
 
 
 def clear_schema_cache() -> None:
-    with _cache_lock:
-        _cache.clear()
+    schema_module.clear_cache()
 
 
-# --- SECURE TOOLS ---
+def _resolve_table_or_error(name: str):
+    """Resolve a table name, returning (table, error_message)."""
+    db = get_schema()
+    table = db.find_table(name)
+    if table:
+        return table, None
+
+    resolved, suggestions = db.resolve_table(name)
+    if resolved:
+        log(f"[yellow]Resolved table '{name}' to {resolved.qualified}.[/yellow]")
+        return resolved, None
+
+    hint = f" Closest matches: {', '.join(suggestions)}." if suggestions else ""
+    return None, (
+        f"Error: No table named '{name}' exists.{hint} "
+        f"Call inspect_database to see what is available."
+    )
+
+
+# --- Tools ----------------------------------------------------------------
 
 
 @tool(parse_docstring=True)
-def list_tables(reasoning: str) -> str:
-    """Lists the tables you are permitted to query.
+def inspect_database(reasoning: str, refresh: bool = False) -> str:
+    """Returns a map of the database: every table, its size and its columns.
+
+    Call this first when you do not yet know the schema. It replaces separate
+    list-tables and describe-table calls for orientation, and shows the real
+    naming convention in use.
 
     Args:
-        reasoning (str): A detailed explanation of why you need to see all tables,
-            relating the need directly to the user's query.
+        reasoning (str): Why you need to see the database structure.
+        refresh (bool): Re-read the schema from the database, bypassing the cache.
 
     Returns:
-        str: A comma-separated list of table names.
+        str: A table-by-table overview, followed by the foreign key relationships.
     """
-    log_panel(title="List Tables Tool", content=f"Reasoning: {reasoning}")
-
-    def load() -> str:
-        allowed = allowed_tables()
-        with with_sql_cursor() as cursor:
-            if allowed:
-                # Compare lowercased, so a quoted PascalCase table such as
-                # "Employee" still matches an allowlist entry of any casing.
-                cursor.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public' AND lower(table_name) IN %s "
-                    "ORDER BY table_name;",
-                    (tuple(sorted(allowed)),),
-                )
-            else:
-                cursor.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public' ORDER BY table_name;"
-                )
-            tables = [row[0] for row in cursor.fetchall()]
-        if not tables:
-            return "No accessible tables found."
-        return ", ".join(tables)
-
+    log_panel(title="Inspect Database Tool", content=f"Reasoning: {reasoning}")
     try:
-        return cached("list_tables", load)
+        db = get_schema(refresh=refresh)
     except Exception as e:  # noqa: BLE001
-        log(f"[red]Error listing tables: {e}[/red]")
-        return f"Error listing tables: {e}"
+        log(f"[red]Error reading schema: {e}[/red]")
+        return f"Error reading the database schema: {e}"
+
+    if not db.tables:
+        return "The database contains no readable tables."
+
+    parts = [f"Database '{Config.Postgres.dbname}' contains {len(db.tables)} table(s).", ""]
+    parts.append(db.overview())
+
+    if db.foreign_keys:
+        parts.append("")
+        parts.append("Foreign key relationships (use these for JOINs):")
+        parts.extend(f"  {fk.render()}" for fk in db.foreign_keys[:60])
+        if len(db.foreign_keys) > 60:
+            parts.append(f"  ... and {len(db.foreign_keys) - 60} more")
+    else:
+        parts.append("")
+        parts.append(
+            "No foreign keys are declared. Infer joins by matching column names "
+            "such as customerId to the primary key of the related table."
+        )
+    return "\n".join(parts)
 
 
 @tool(parse_docstring=True)
 def describe_table(reasoning: str, table_name: str) -> str:
-    """Returns the schema of a table: its columns, types and nullability.
+    """Returns the full column list and relationships for one table.
+
+    The name is matched loosely, so 'customer' will find a table actually named
+    'Customer' or 'customer_profile'.
 
     Args:
-        reasoning (str): A detailed explanation of why you need this table's structure.
-        table_name (str): The exact name of the table to describe.
+        reasoning (str): Why you need this table's structure.
+        table_name (str): The table to describe.
 
     Returns:
-        str: One line per column.
+        str: Columns with types, primary keys, and related tables.
     """
     log_panel(title="Describe Table Tool", content=f"Table: {table_name}\nReasoning: {reasoning}")
-    denied = check_table_allowed(table_name)
-    if denied:
-        return denied
-
-    def load() -> str:
-        with with_sql_cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT column_name, data_type, is_nullable
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = %s
-                ORDER BY ordinal_position;
-                """,
-                (table_name,),
-            )
-            rows = cursor.fetchall()
-        if not rows:
-            return f"Table '{table_name}' was not found in the 'public' schema."
-        lines = [
-            f"{name} {dtype}{'' if nullable == 'YES' else ' NOT NULL'}"
-            for name, dtype, nullable in rows
-        ]
-        return f"{table_name}({len(rows)} columns)\n" + "\n".join(lines)
-
     try:
-        return cached(f"describe:{table_name.lower()}", load)
+        table, error = _resolve_table_or_error(table_name)
+        if error:
+            return error
+        return get_schema().describe(table)
     except Exception as e:  # noqa: BLE001
         log(f"[red]Error describing table: {e}[/red]")
         return f"Error describing table: {e}"
@@ -319,12 +239,12 @@ def describe_table(reasoning: str, table_name: str) -> str:
 
 @tool(parse_docstring=True)
 def sample_table(reasoning: str, table_name: str, row_sample_size: int = 3) -> str:
-    """Retrieves a few sample rows to clarify what a table's columns contain.
+    """Retrieves a few rows so you can see what the data actually looks like.
 
     Args:
-        reasoning (str): A detailed explanation of why you need sample data.
-        table_name (str): The exact name of the table to sample.
-        row_sample_size (int): Number of rows to retrieve (default 3, max 10).
+        reasoning (str): Why you need sample data.
+        table_name (str): The table to sample.
+        row_sample_size (int): Number of rows (default 3, max 10).
 
     Returns:
         str: A compact table of sample rows.
@@ -333,14 +253,14 @@ def sample_table(reasoning: str, table_name: str, row_sample_size: int = 3) -> s
         title="Sample Table Tool",
         content=f"Table: {table_name}\nRows: {row_sample_size}\nReasoning: {reasoning}",
     )
-    denied = check_table_allowed(table_name)
-    if denied:
-        return denied
-
-    limit = max(1, min(int(row_sample_size), 10))
     try:
+        table, error = _resolve_table_or_error(table_name)
+        if error:
+            return error
+
+        limit = max(1, min(int(row_sample_size), 10))
         query = sql.SQL("SELECT * FROM {table} LIMIT %s;").format(
-            table=sql.Identifier(table_name)
+            table=sql.SQL(table.qualified)
         )
         with with_sql_cursor() as cursor:
             cursor.execute(query, (limit,))
@@ -356,7 +276,8 @@ def sample_table(reasoning: str, table_name: str, row_sample_size: int = 3) -> s
 def execute_sql(reasoning: str, sql_query: str) -> str:
     """Executes a single read-only SELECT query and returns the result.
 
-    Data modification statements are rejected.
+    Identifiers that do not match the schema are corrected automatically where
+    possible, and the correction is reported back to you.
 
     Args:
         reasoning (str): Why this query answers the user's request.
@@ -367,17 +288,27 @@ def execute_sql(reasoning: str, sql_query: str) -> str:
     """
     log_panel(title="Execute SQL Tool", content=f"Query: {sql_query}\nReasoning: {reasoning}")
 
-    for check in (check_read_only(sql_query), check_query_allowed(sql_query)):
-        if check:
-            log(f"[red]{check}[/red]")
-            return check
+    blocked = check_read_only(sql_query)
+    if blocked:
+        log(f"[red]{blocked}[/red]")
+        return blocked
+
+    prefix = ""
+    try:
+        db = get_schema()
+        repair = repair_sql(sql_query, db)
+        if repair.changed:
+            log(f"[yellow]Rewrote query: {'; '.join(repair.corrections)}[/yellow]")
+            prefix = repair.note() + "\n\n"
+        sql_query = repair.sql
+    except Exception as e:  # noqa: BLE001 - repair is best-effort
+        log(f"[yellow]Could not repair query ({e}); running it unchanged.[/yellow]")
+        db = None
 
     try:
         with with_sql_cursor() as cursor:
             cursor.execute(sql_query)
             columns = [d[0] for d in cursor.description] if cursor.description else []
-            # Fetch one extra row to detect truncation without pulling the
-            # entire result set into memory.
             rows = cursor.fetchmany(Config.MAX_SQL_RESULT_ROWS + 1)
         clipped = len(rows) > Config.MAX_SQL_RESULT_ROWS
         rows = rows[: Config.MAX_SQL_RESULT_ROWS]
@@ -387,135 +318,91 @@ def execute_sql(reasoning: str, sql_query: str) -> str:
                 f"\n[Showing the first {Config.MAX_SQL_RESULT_ROWS} rows. "
                 f"Add LIMIT, filters, or an aggregate to narrow the result.]"
             )
-        return result
+        return prefix + result
     except Exception as e:  # noqa: BLE001
         log(f"[red]Error running query: {e}[/red]")
-        return f"Error running query: {e}. Check your SQL syntax and column names."
+        message = f"Error running query: {e}"
+        if db is not None:
+            hint = suggest_for_error(str(e), db)
+            if hint:
+                message += f"\n{hint}"
+        return message
 
 
 @tool(parse_docstring=True)
-def fuzzy_full_text_search(
-    reasoning: str,
-    table_name: str,
-    column_names: List[str],
-    search_phrase: str,
-    similarity_threshold: float = 0.2,
-    row_limit: int = 5,
-) -> str:
-    """Searches text columns for approximate matches (misspellings, variations).
+def find_value(reasoning: str, search_text: str, table_name: str = "", max_hits: int = 15) -> str:
+    """Finds which table and column contains a given name or value.
+
+    Use this when the user mentions something specific - a company, a person, a
+    product code - and you do not know where it is stored. Searches the
+    text columns most likely to hold labels across the database.
 
     Args:
-        reasoning (str): Why a fuzzy search is needed.
-        table_name (str): The table to search.
-        column_names (List[str]): Columns to search within.
-        search_phrase (str): The phrase to search for approximately.
-        similarity_threshold (float): Similarity threshold from 0 to 1 (default 0.2).
-        row_limit (int): Maximum rows to return (default 5).
+        reasoning (str): Why you need to locate this value.
+        search_text (str): The value to look for.
+        table_name (str): Restrict the search to one table. Leave empty to search all.
+        max_hits (int): Maximum matches to report (default 15).
 
     Returns:
-        str: Rows that closely match the search phrase.
+        str: Where the value was found, with the matching values.
     """
     log_panel(
-        title="Fuzzy Full-Text Search Tool",
-        content=(
-            f"Table: {table_name}\nColumns: {column_names}\n"
-            f"Phrase: {search_phrase}\nReasoning: {reasoning}"
-        ),
+        title="Find Value Tool",
+        content=f"Text: {search_text}\nTable: {table_name or 'all'}\nReasoning: {reasoning}",
     )
-    denied = check_table_allowed(table_name)
-    if denied:
-        return denied
-    if not column_names:
-        return "Error: You must provide at least one column name to search."
-
-    limit = max(1, min(int(row_limit), 25))
-    try:
-        safe_cols = [sql.Identifier(col) for col in column_names]
-        conditions = sql.SQL(" OR ").join(
-            sql.SQL("similarity(COALESCE(CAST({col} AS text), ''), %s) > %s").format(col=col)
-            for col in safe_cols
-        )
-        ordering = (
-            sql.SQL("GREATEST(")
-            + sql.SQL(", ").join(
-                sql.SQL("similarity(COALESCE(CAST({col} AS text), ''), %s)").format(col=col)
-                for col in safe_cols
-            )
-            + sql.SQL(")")
-        )
-        query = sql.SQL(
-            "SELECT * FROM {table} WHERE {conditions} ORDER BY {ordering} DESC LIMIT %s;"
-        ).format(table=sql.Identifier(table_name), conditions=conditions, ordering=ordering)
-
-        params: List[Any] = []
-        for _ in column_names:
-            params.extend([search_phrase, similarity_threshold])
-        params.extend([search_phrase] * len(column_names))
-        params.append(limit)
-
-        with with_sql_cursor() as cursor:
-            cursor.execute(query, params)
-            columns = [d[0] for d in cursor.description]
-            rows = cursor.fetchall()
-        if not rows:
-            return "No close matches found. Try a lower similarity_threshold."
-        return format_rows(columns, rows)
-    except Exception as e:  # noqa: BLE001
-        log(f"[red]Error running fuzzy search: {e}[/red]")
-        if "function similarity(" in str(e):
-            return (
-                "Error: Fuzzy search requires the 'pg_trgm' extension. "
-                "Run: CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-            )
-        return f"Error running fuzzy search: {e}"
-
-
-@tool(parse_docstring=True)
-def get_foreign_key_relationships(reasoning: str) -> str:
-    """Returns the foreign key relationships, showing how tables join.
-
-    Args:
-        reasoning (str): Why you need the join relationships.
-
-    Returns:
-        str: One relationship per line, as 'table.column -> table.column'.
-    """
-    log_panel(title="Get Foreign Key Relationships Tool", content=f"Reasoning: {reasoning}")
-
-    def load() -> str:
-        query = """
-            SELECT
-                tc.table_name, kcu.column_name,
-                ccu.table_name AS foreign_table_name,
-                ccu.column_name AS foreign_column_name
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu
-              ON tc.constraint_name = kcu.constraint_name
-             AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage AS ccu
-              ON ccu.constraint_name = tc.constraint_name
-             AND ccu.table_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public';
-        """
-        with with_sql_cursor() as cursor:
-            cursor.execute(query)
-            rows = cursor.fetchall()
-
-        allowed = allowed_tables()
-        if allowed is not None:
-            rows = [r for r in rows if r[0].lower() in allowed and r[2].lower() in allowed]
-        if not rows:
-            return (
-                "No foreign key relationships found. Join keys must be inferred "
-                "from column names; use describe_table to compare candidates."
-            )
-        return "\n".join(f"{r[0]}.{r[1]} -> {r[2]}.{r[3]}" for r in rows)
+    if not search_text.strip():
+        return "Error: search_text must not be empty."
 
     try:
-        return cached("foreign_keys", load)
+        db = get_schema()
+        if table_name:
+            table, error = _resolve_table_or_error(table_name)
+            if error:
+                return error
+            targets = [table]
+        else:
+            # Skip empty tables; scanning them costs time and finds nothing.
+            targets = [t for t in db.tables if t.estimated_rows > 0] or db.tables
+
+        hits: List[str] = []
+        limit = max(1, min(int(max_hits), 50))
+        with with_sql_cursor() as cursor:
+            for table in targets:
+                candidates = table.name_columns()[:6]
+                if not candidates:
+                    continue
+                for column in candidates:
+                    if len(hits) >= limit:
+                        break
+                    try:
+                        query = sql.SQL(
+                            "SELECT DISTINCT {col} FROM {table} "
+                            "WHERE {col} ILIKE %s AND {col} IS NOT NULL LIMIT 3;"
+                        ).format(
+                            col=sql.Identifier(column.name),
+                            table=sql.SQL(table.qualified),
+                        )
+                        cursor.execute(query, (f"%{search_text}%",))
+                        for (value,) in cursor.fetchall():
+                            hits.append(f"{table.qualified}.{column.name} = {value!r}")
+                    except Exception:  # noqa: BLE001
+                        # A column may not be comparable with ILIKE; skip it and
+                        # roll back so the transaction stays usable.
+                        cursor.execute("ROLLBACK;")
+                        continue
+                if len(hits) >= limit:
+                    break
+
+        if not hits:
+            return (
+                f"'{search_text}' was not found in any indexed text column. "
+                f"Try a shorter fragment, or use inspect_database to find the "
+                f"right table and query it directly."
+            )
+        return f"Found '{search_text}' in:\n" + "\n".join(hits[:limit])
     except Exception as e:  # noqa: BLE001
-        log(f"[red]Error getting foreign key relationships: {e}[/red]")
-        return f"Error getting foreign key relationships: {e}"
+        log(f"[red]Error searching for value: {e}[/red]")
+        return f"Error searching for value: {e}"
 
 
 @tool(parse_docstring=True)
@@ -523,6 +410,9 @@ def get_distinct_column_values(
     reasoning: str, table_name: str, column_name: str, value_limit: int = 25
 ) -> str:
     """Fetches distinct values for a column, to learn the real category labels.
+
+    Call this before filtering on a categorical column, so you filter on values
+    that actually exist.
 
     Args:
         reasoning (str): Why you need the distinct values.
@@ -537,24 +427,38 @@ def get_distinct_column_values(
         title="Get Distinct Column Values Tool",
         content=f"Table: {table_name}\nColumn: {column_name}\nReasoning: {reasoning}",
     )
-    denied = check_table_allowed(table_name)
-    if denied:
-        return denied
-
-    limit = max(1, min(int(value_limit), 100))
     try:
+        table, error = _resolve_table_or_error(table_name)
+        if error:
+            return error
+
+        db = get_schema()
+        column = table.column(column_name)
+        if column is None:
+            resolved, suggestions = db.resolve_column(table, column_name)
+            if resolved is None:
+                hint = f" Available: {', '.join(suggestions)}." if suggestions else ""
+                return f"Error: '{table.qualified}' has no column '{column_name}'.{hint}"
+            log(f"[yellow]Resolved column '{column_name}' to '{resolved.name}'.[/yellow]")
+            column = resolved
+
+        limit = max(1, min(int(value_limit), 100))
         query = sql.SQL("SELECT DISTINCT {column} FROM {table} LIMIT %s;").format(
-            column=sql.Identifier(column_name), table=sql.Identifier(table_name)
+            column=sql.Identifier(column.name), table=sql.SQL(table.qualified)
         )
         with with_sql_cursor() as cursor:
             cursor.execute(query, (limit + 1,))
             values = [row[0] for row in cursor.fetchall()]
+
         clipped = len(values) > limit
         values = values[:limit]
         rendered = ", ".join("NULL" if v is None else str(v) for v in values)
         if clipped:
             rendered += f" ... [more than {limit} distinct values]"
-        return rendered or "No values found."
+        prefix = (
+            f"(column resolved to '{column.name}')\n" if column.name.lower() != column_name.lower() else ""
+        )
+        return prefix + (rendered or "No values found.")
     except Exception as e:  # noqa: BLE001
         log(f"[red]Error getting distinct values: {e}[/red]")
         return f"Error getting distinct column values: {e}"
@@ -577,81 +481,23 @@ def explain_query(reasoning: str, sql_query: str) -> str:
     if clean.upper().startswith("EXPLAIN"):
         clean = clean[len("EXPLAIN") :].lstrip()
 
-    for check in (check_read_only(clean), check_query_allowed(clean)):
-        if check:
-            return check
+    blocked = check_read_only(clean)
+    if blocked:
+        return blocked
+
+    try:
+        db = get_schema()
+        repair = repair_sql(clean, db)
+        clean = repair.sql
+        prefix = repair.note() + "\n\n" if repair.changed else ""
+    except Exception:  # noqa: BLE001
+        prefix = ""
 
     try:
         with with_sql_cursor() as cursor:
             cursor.execute(f"EXPLAIN {clean}")
             rows = cursor.fetchall()
-        return "\n".join(str(row[0]) for row in rows)
+        return prefix + "\n".join(str(row[0]) for row in rows)
     except Exception as e:  # noqa: BLE001
         log(f"[red]Error explaining query: {e}[/red]")
         return f"Error explaining query: {e}"
-
-
-@tool(parse_docstring=True)
-def search_entity_by_name(
-    reasoning: str, entity_name: str, similarity_threshold: float = 0.3
-) -> str:
-    """Searches for a company or person across both customers and vendors.
-
-    Use this first when the user names an entity without saying whether they are
-    a customer or a vendor.
-
-    Args:
-        reasoning (str): Why you need to search for this entity.
-        entity_name (str): The company or individual to search for.
-        similarity_threshold (float): Similarity threshold from 0 to 1 (default 0.3).
-
-    Returns:
-        str: Matches found in the customer and vendor tables.
-    """
-    log_panel(
-        title="Search Entity By Name Tool",
-        content=f"Name: {entity_name}\nReasoning: {reasoning}",
-    )
-
-    query = """
-    (SELECT 'Customer' AS entity_type, customer_name AS name,
-            similarity(customer_name, %s) AS score
-     FROM customer_profile
-     WHERE similarity(customer_name, %s) > %s)
-    UNION ALL
-    (SELECT 'Vendor' AS entity_type, vendor_name AS name,
-            similarity(vendor_name, %s) AS score
-     FROM vendor_profile
-     WHERE similarity(vendor_name, %s) > %s)
-    ORDER BY score DESC
-    LIMIT 20;
-    """
-    params = [
-        entity_name,
-        entity_name,
-        similarity_threshold,
-        entity_name,
-        entity_name,
-        similarity_threshold,
-    ]
-
-    try:
-        with with_sql_cursor() as cursor:
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-        if not rows:
-            return (
-                f"No entity matching '{entity_name}' was found as a customer or vendor. "
-                f"Try a shorter form of the name or a lower similarity_threshold."
-            )
-        return "\n".join(
-            f"{entity_type}: {name} (score {score:.2f})" for entity_type, name, score in rows
-        )
-    except Exception as e:  # noqa: BLE001
-        log(f"[red]Error searching for entity: {e}[/red]")
-        if "function similarity(" in str(e):
-            return (
-                "Error: This search requires the 'pg_trgm' extension. "
-                "Run: CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-            )
-        return f"Error searching for entity: {e}"

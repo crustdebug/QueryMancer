@@ -131,73 +131,14 @@ class Config:
             chain.append(model)
         return [model for model in chain if cls.credentials(model.provider).available]
 
-    # Tables the agent is permitted to read. An empty list means every table in
-    # the 'public' schema is allowed. This is enforced in tools.py, not merely
-    # displayed in the UI.
-    ALLOWED_TABLES = [
-        "advance",
-        "ap_set_up",
-        "arap_set_up",
-        "asset",
-        "asset_depreciation_entry",
-        "bank_account",
-        "bank_gurantee",
-        "budget",
-        "budget_adjustment",
-        "budget_coa_mapping",
-        "budget_set_up",
-        "chart_of_accounts",
-        "cheque_book",
-        "cost_center",
-        "countries",
-        "credit_note",
-        "credit_note_summary",
-        "currency_chart",
-        "customer_invoice",
-        "customer_invoice_summary",
-        "customer_profile",
-        "debit_note",
-        "debit_note_summary",
-        "department",
-        "depreciation",
-        "depreciation_setup",
-        "employee",
-        "employee_expense",
-        "employee_invoice_summary",
-        "financial_year",
-        "gst_return",
-        "gst_settlement",
-        "gst_setup",
-        "historical_pl_bs",
-        "hsnsac",
-        "invoice_tax",
-        "invoice_terms_and_annexure",
-        "journal",
-        "journal_entry",
-        "journal_entry_breakdown",
-        "petty_cash",
-        "project",
-        "provisions",
-        "regions",
-        "roc_return",
-        "salary_invoice",
-        "salary_invoice_summary",
-        "sop",
-        "standard_coa_mapping",
-        "subregions",
-        "tax_settlement_entry",
-        "tds_return",
-        "tds_setup",
-        "vendor_bank",
-        "vendor_categories",
-        "vendor_detail",
-        "vendor_invoice",
-        "vendor_invoice_deduction",
-        "vendor_invoice_reallocation",
-        "vendor_invoice_summary",
-        "vendor_profile",
-        "vendor_tax",
-    ]
+    # How many tables the database overview lists before summarising. Raise it
+    # for very large schemas at the cost of more tokens per call.
+    MAX_OVERVIEW_TABLES = 60
+
+    # Similarity required before a mistyped table or column name is silently
+    # corrected to a real one. Raising it makes corrections more conservative;
+    # lowering it risks rewriting a query to the wrong table. See schema.py.
+    NAME_MATCH_CUTOFF = 0.75
 
     class Postgres:
         dbname = os.getenv("POSTGRES_DB")

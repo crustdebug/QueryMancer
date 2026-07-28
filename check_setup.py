@@ -27,34 +27,32 @@ def check_database() -> bool:
                 "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';"
             )
             (table_count,) = cursor.fetchone()
-            cursor.execute("SELECT count(*) FROM pg_extension WHERE extname = 'pg_trgm';")
-            (has_trgm,) = cursor.fetchone()
     except Exception as error:  # noqa: BLE001
         print(f"  FAILED: {error}")
         return False
 
     print(f"  connected to '{name}' with {table_count} table(s) in the public schema")
-    if not has_trgm:
-        print("  note: pg_trgm is not installed, so fuzzy search will not work.")
-        print("        Run: CREATE EXTENSION IF NOT EXISTS pg_trgm;")
 
-    allowed = {t.lower() for t in Config.ALLOWED_TABLES}
-    if allowed:
-        try:
-            with with_sql_cursor() as cursor:
-                cursor.execute(
-                    "SELECT lower(table_name) FROM information_schema.tables "
-                    "WHERE table_schema = 'public';"
-                )
-                present = {row[0] for row in cursor.fetchall()}
-        except Exception:  # noqa: BLE001
-            return True
-        visible = allowed & present
-        print(f"  allowlist: {len(visible)} of {len(allowed)} configured tables exist here")
-        if not visible:
-            print("  WARNING: none of Config.ALLOWED_TABLES exist in this database.")
-            print("           The agent will see no tables. Update ALLOWED_TABLES")
-            print("           to match this schema, or set it to [] to allow all.")
+    # Read the schema the same way the agent does, so this reports exactly what
+    # the agent will see.
+    try:
+        from tools import get_schema
+
+        db = get_schema(refresh=True)
+    except Exception as error:  # noqa: BLE001
+        print(f"  schema introspection FAILED: {error}")
+        return False
+
+    populated = [t for t in db.tables if t.estimated_rows > 0]
+    print(f"  agent sees {len(db.tables)} readable table(s) across "
+          f"{len({t.schema for t in db.tables})} schema(s)")
+    print(f"  {len(db.foreign_keys)} foreign key(s) available for joins")
+    if populated:
+        largest = max(populated, key=lambda t: t.estimated_rows)
+        print(f"  largest table: {largest.qualified} (~{largest.estimated_rows:,} rows)")
+    else:
+        print("  note: every table appears empty. Queries will return no rows.")
+        print("        If you just loaded data, run ANALYZE; to refresh statistics.")
     return True
 
 
