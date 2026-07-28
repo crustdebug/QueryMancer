@@ -409,9 +409,16 @@ def connect_demo(querymancer_session: Optional[str] = Cookie(default=None)):
             )
 
         schema_module.clear_cache()
-        ok, _ = session_module.connect(settings)
+        ok, detail = session_module.connect(settings)
         session.is_demo = ok
         session.demo_label = DEMO_LABEL
+
+        if not ok:
+            # The visitor is told nothing useful, so the operator needs the
+            # reason in the log or the failure is undiagnosable. sanitize()
+            # strips the password; the host stays, which is fine in a
+            # server-side log the visitor cannot read.
+            log.error("Demo database connection failed: %s", sanitize(detail, settings))
 
         # The driver's own message names the host or file it connected to, so
         # it is replaced outright rather than sanitised: sanitize() removes

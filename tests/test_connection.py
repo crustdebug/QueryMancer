@@ -357,3 +357,53 @@ def test_a_normal_query_is_unaffected_by_the_timeout(tmp_path):
     columns, rows, _ = conn.run("SELECT count(*) FROM t")
     assert rows[0][0] == 3
     conn.dispose()
+
+
+# --- connection-string query parameters -----------------------------------
+
+
+def test_sslmode_from_the_url_is_preserved():
+    """Hosted Postgres (Neon, Supabase, Heroku) hands out URLs ending in
+    ?sslmode=require and refuses the connection without it. Dropping the
+    query string made every such database fail to connect."""
+    settings = ConnectionSettings.from_url(
+        "postgresql://u:p@ep-x.neon.tech/neondb?sslmode=require"
+    )
+    assert settings.options.get("sslmode") == "require"
+    assert "sslmode=require" in settings.url()
+
+
+def test_channel_binding_is_dropped():
+    """libpq understands it; psycopg2's connect() rejects it as an unknown
+    keyword. sslmode already enforces what it is there for."""
+    settings = ConnectionSettings.from_url(
+        "postgresql://u:p@ep-x.neon.tech/neondb?sslmode=require&channel_binding=require"
+    )
+    assert "channel_binding" not in settings.options
+    assert settings.options.get("sslmode") == "require"
+
+
+def test_multiple_parameters_are_kept():
+    settings = ConnectionSettings.from_url(
+        "postgresql://u:p@h/db?sslmode=verify-full&application_name=querymancer"
+    )
+    assert settings.options["sslmode"] == "verify-full"
+    assert settings.options["application_name"] == "querymancer"
+
+
+def test_a_url_without_parameters_still_parses():
+    settings = ConnectionSettings.from_url("postgresql://u:p@h:5432/db")
+    assert settings.options == {}
+
+
+def test_empty_parameter_values_are_ignored():
+    settings = ConnectionSettings.from_url("postgresql://u:p@h/db?sslmode=")
+    assert "sslmode" not in settings.options
+
+
+def test_parameters_do_not_leak_the_password():
+    settings = ConnectionSettings.from_url(
+        f"postgresql://u:{SECRET}@h/db?sslmode=require"
+    )
+    assert SECRET not in settings.safe_url
+    assert "sslmode=require" in settings.safe_url

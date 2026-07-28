@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from typing import Dict, List, Optional
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -131,6 +131,20 @@ class ConnectionSettings:
             supported = ", ".join(ENGINES)
             raise ValueError(f"Unsupported database type '{scheme}'. Supported: {supported}.")
 
+        # Query parameters carry connection requirements, not decoration:
+        # hosted Postgres (Neon, Supabase, Heroku) hands out URLs ending in
+        # ?sslmode=require and refuses the connection without it. Dropping
+        # them made every such URL fail with an error that named none of this.
+        options = {
+            key: values[0]
+            for key, values in parse_qs(parsed.query or "").items()
+            if values and values[0]
+        }
+        # channel_binding is understood by libpq but not by psycopg2's
+        # connect(), which rejects it as an unknown keyword. sslmode already
+        # covers what it is there to enforce.
+        options.pop("channel_binding", None)
+
         return cls(
             engine=engine,
             host=parsed.hostname or "localhost",
@@ -138,6 +152,7 @@ class ConnectionSettings:
             database=(parsed.path or "").lstrip("/"),
             username=parsed.username or "",
             password=parsed.password or "",
+            options=options,
         )
 
     def with_database(self, database: str) -> "ConnectionSettings":
