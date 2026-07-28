@@ -7,7 +7,14 @@ takes a key out of service when the provider says it is over quota.
 Three failure modes are distinguished, because they deserve different handling:
 
   * A rate limit (HTTP 429, "quota exceeded") is temporary. The key is benched
-    for a cooldown and returns to the rotation afterwards.
+    and returns to the rotation afterwards. Not all 429s are the same,
+    though: a per-minute limit clears in seconds, while a per-day limit
+    resets at midnight and benching for the usual short cooldown just wastes
+    that key's remaining daily budget being retried once a minute for hours.
+    Where the provider says which kind it hit - Gemini includes a quotaId
+    like "...PerMinute-FreeTier" vs "...PerDay-FreeTier", plus a structured
+    RetryInfo.retryDelay - that is used instead of guessing. Otherwise the
+    key falls back to the standard cooldown.
   * An auth failure (HTTP 401/403, "API key not valid") is permanent for this
     process. The key is retired immediately so it is never tried again.
   * A transient server error (HTTP 503, "overloaded", "unavailable") is not
@@ -16,10 +23,15 @@ Three failure modes are distinguished, because they deserve different handling:
     once the pool is exhausted, RotatingChatModel falls back to the next
     model) rather than crashing the request outright.
 
-Anything else is a genuine error and is raised to the caller rather than being
-silently retried against every key in the pool.
+Anything else - including a model name the account can't use (HTTP 404,
+"NOT_FOUND", "no longer available") - is a genuine error. Retrying it against
+another key in the same pool would not help, since every key talks to the
+same model, but it also should not crash the whole request: RotatingChatModel
+in models.py catches it and moves on to the next model in the fallback chain,
+the same as it does for a pool that ran out of keys.
 """
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -38,6 +50,22 @@ RATE_LIMIT_MARKERS = (
     "resource exhausted",
     "too many requests",
 )
+
+# Substrings Gemini uses in QuotaFailure.violations[].quotaId to say which
+# window was exceeded. Checked only after RATE_LIMIT_MARKERS already matched.
+DAILY_QUOTA_MARKERS = ("perday", "per-day", "daily")
+
+# Longest a key is ever benched for a single 429, even if the provider's
+# reported retry delay is longer (a genuine day-scale RPD reset). Past this,
+# the key is better treated as exhausted-for-now via the normal cooldown and
+# retried on the pool's own schedule rather than left blocked for hours -
+# session state does not persist anyway, so a very long bench is pointless.
+MAX_RETRY_DELAY_SECONDS = 15 * 60.0
+
+# Matches Gemini's flattened RetryInfo.retryDelay, e.g. "retryDelay': '17s'"
+# or "retryDelay: 90s" - the exception message embeds a Python-repr'd dict,
+# not real JSON, so this is a plain regex rather than a JSON parse.
+_RETRY_DELAY_RE = re.compile(r"retrydelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 AUTH_FAILURE_MARKERS = (
     "api key not valid",
@@ -83,6 +111,37 @@ def _classify(error: BaseException) -> str:
     return "other"
 
 
+def _is_daily_quota(error: BaseException) -> bool:
+    """True if a rate-limit error names a per-day quota rather than per-minute.
+
+    Only meaningful for providers (Gemini) that include a quotaId string in
+    the error body. Providers that don't are treated as per-minute, which
+    keeps the existing short-cooldown behaviour as the default.
+    """
+    message = str(error).lower()
+    return any(marker in message for marker in DAILY_QUOTA_MARKERS)
+
+
+def _extract_retry_delay(error: BaseException) -> Optional[float]:
+    """Pull a provider-reported retry delay out of the error, if present.
+
+    Gemini's RetryInfo.retryDelay is authoritative when it's there - it is
+    what actually determines when the quota window resets, rather than a
+    guess. Capped at MAX_RETRY_DELAY_SECONDS so a genuine multi-hour RPD
+    reset doesn't bench a key for the rest of the process's life; past that
+    point the standard cooldown takes over and the key is retried on the
+    pool's normal schedule instead.
+    """
+    match = _RETRY_DELAY_RE.search(str(error))
+    if not match:
+        return None
+    try:
+        delay = float(match.group(1))
+    except ValueError:
+        return None
+    return min(delay, MAX_RETRY_DELAY_SECONDS)
+
+
 def _redact(key: str) -> str:
     """Render a key for logs without exposing it."""
     if len(key) <= 8:
@@ -99,6 +158,7 @@ class _KeyState:
     successes: int = 0
     rate_limit_hits: int = 0
     unavailable_hits: int = 0
+    daily_quota_hits: int = 0
 
     def usable(self, now: float) -> bool:
         return not self.retired and now >= self.blocked_until
@@ -115,6 +175,11 @@ class KeyPool:
     keys: List[str]
     cooldown_seconds: float = 60.0
     unavailable_cooldown_seconds: float = 5.0
+    # Applied when a 429's quotaId names a per-day limit but the provider
+    # didn't include a usable retryDelay. Capped by MAX_RETRY_DELAY_SECONDS
+    # regardless, since the process doesn't persist across restarts anyway -
+    # there's no benefit to benching a key longer than that ceiling.
+    daily_cooldown_seconds: float = MAX_RETRY_DELAY_SECONDS
     _states: List[_KeyState] = field(default_factory=list, init=False)
     _cursor: int = field(default=0, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -187,10 +252,31 @@ class KeyPool:
                         )
                     elif kind == "rate_limit":
                         state.rate_limit_hits += 1
-                        state.blocked_until = time.monotonic() + self.cooldown_seconds
+                        daily = _is_daily_quota(error)
+                        reported_delay = _extract_retry_delay(error)
+                        if daily:
+                            state.daily_quota_hits += 1
+
+                        if reported_delay is not None:
+                            # The provider told us exactly when this window
+                            # resets - trust that over a guessed cooldown.
+                            bench_for = reported_delay
+                        elif daily:
+                            # No explicit delay but the quotaId says per-day:
+                            # the standard short cooldown would just retry a
+                            # key that cannot succeed again for hours, wasting
+                            # the attempt. Bench for the configured daily
+                            # cooldown instead so the pool spends its retries
+                            # on keys that can actually serve the request.
+                            bench_for = self.daily_cooldown_seconds
+                        else:
+                            bench_for = self.cooldown_seconds
+
+                        state.blocked_until = time.monotonic() + bench_for
+                        kind_label = "daily quota" if daily else "rate-limited"
                         log(
-                            f"[yellow]{self.provider}: key {_redact(state.key)} rate-limited. "
-                            f"Benched {self.cooldown_seconds:.0f}s, rotating to next key.[/yellow]"
+                            f"[yellow]{self.provider}: key {_redact(state.key)} {kind_label}. "
+                            f"Benched {bench_for:.0f}s, rotating to next key.[/yellow]"
                         )
                     elif kind == "unavailable":
                         state.unavailable_hits += 1
@@ -236,6 +322,7 @@ class KeyPool:
                     "status": status,
                     "calls": state.successes,
                     "rate_limits": state.rate_limit_hits,
+                    "daily_quota_hits": state.daily_quota_hits,
                     "unavailable": state.unavailable_hits,
                 }
             )

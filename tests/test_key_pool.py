@@ -2,11 +2,33 @@
 
 import pytest
 
-from key_pool import KeyPool, PoolExhausted, _classify
+from key_pool import KeyPool, PoolExhausted, _classify, _extract_retry_delay, _is_daily_quota
 
 
 class RateLimited(Exception):
     pass
+
+
+# Captured live from the real Gemini API (gemini-2.0-flash, whose free-tier
+# quota Google has zeroed) so the parsing tests exercise the actual shape of
+# the flattened error string, not a guessed-at approximation of it.
+REAL_GEMINI_RPM_ERROR = (
+    "Error calling model 'gemini-2.0-flash' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. "
+    "{'error': {'code': 429, 'message': 'You exceeded your current quota, please check your "
+    "plan and billing details. ... \\nPlease retry in 17.980842916s.', "
+    "'status': 'RESOURCE_EXHAUSTED', 'details': [...{'@type': "
+    "'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': "
+    "'generativelanguage.googleapis.com/generate_content_free_tier_input_token_count', "
+    "'quotaId': 'GenerateContentInputTokensPerModelPerMinute-FreeTier', 'quotaDimensions': "
+    "{'location': 'global', 'model': 'gemini-2.0-flash'}}, {'quotaMetric': "
+    "'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': "
+    "'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'location': "
+    "'global', 'model': 'gemini-2.0-flash'}}, {'quotaMetric': "
+    "'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': "
+    "'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': "
+    "'global', 'model': 'gemini-2.0-flash'}}]}, {'@type': "
+    "'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '17s'}]}}"
+)
 
 
 def test_round_robin_spreads_calls_across_keys():
@@ -102,6 +124,76 @@ def test_cooldown_expiry_returns_key_to_rotation(monkeypatch):
 )
 def test_error_classification(message, expected):
     assert _classify(Exception(message)) == expected
+
+
+# --- RPM vs RPD and the structured retryDelay -----------------------------
+
+
+def test_real_gemini_error_is_classified_as_rate_limit():
+    assert _classify(Exception(REAL_GEMINI_RPM_ERROR)) == "rate_limit"
+
+
+def test_real_gemini_error_retry_delay_is_extracted():
+    # RetryInfo.retryDelay in the captured response was '17s'.
+    assert _extract_retry_delay(Exception(REAL_GEMINI_RPM_ERROR)) == 17.0
+
+
+def test_purely_per_minute_quota_is_not_flagged_daily():
+    message = (
+        "429 quotaId: GenerateRequestsPerMinutePerProjectPerModel-FreeTier, "
+        "retryDelay: '12s'"
+    )
+    assert _is_daily_quota(Exception(message)) is False
+    assert _extract_retry_delay(Exception(message)) == 12.0
+
+
+def test_per_day_quota_is_flagged_daily():
+    message = "429 quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    assert _is_daily_quota(Exception(message)) is True
+
+
+def test_no_retry_delay_present_returns_none():
+    assert _extract_retry_delay(Exception("429 quota exceeded, no structured info")) is None
+
+
+def test_explicit_retry_delay_is_used_as_the_bench_duration():
+    """The provider's own retryDelay should win over the generic cooldown."""
+    pool = KeyPool(provider="test", keys=["a"], cooldown_seconds=60)
+
+    def call(key: str):
+        raise Exception("429 RESOURCE_EXHAUSTED retryDelay: '3s'")
+
+    with pytest.raises(PoolExhausted):
+        pool.run(call)
+    # Benched for ~3s (the reported delay), not the 60s generic cooldown.
+    wait = pool.seconds_until_free()
+    assert wait is not None and wait <= 5
+
+
+def test_daily_quota_without_retry_delay_uses_the_daily_cooldown_not_the_short_one():
+    """A per-day 429 with no explicit delay must not use the short RPM cooldown.
+
+    Benching for the normal ~60s cooldown would just retry a key once a
+    minute for hours against a quota that cannot succeed until it resets.
+    """
+    pool = KeyPool(
+        provider="test", keys=["a"], cooldown_seconds=1, daily_cooldown_seconds=120
+    )
+
+    def call(key: str):
+        raise Exception("429 quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+
+    with pytest.raises(PoolExhausted):
+        pool.run(call)
+    wait = pool.seconds_until_free()
+    assert wait is not None and wait > 60  # much longer than cooldown_seconds=1
+
+
+def test_retry_delay_is_capped_at_the_maximum():
+    from key_pool import MAX_RETRY_DELAY_SECONDS
+
+    message = "429 RESOURCE_EXHAUSTED retryDelay: '99999s'"
+    assert _extract_retry_delay(Exception(message)) == MAX_RETRY_DELAY_SECONDS
 
 
 def test_unavailable_model_rotates_to_next_key_instead_of_crashing():

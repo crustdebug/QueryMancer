@@ -32,24 +32,31 @@ EXAONE = ModelConfig("lgai/exaone-3-5-32b-instruct", 0.0, ModelProvider.TOGETHER
 
 # gemini-2.0-flash and gemini-2.0-flash-lite were confirmed working when this
 # app was first built, but Google has since zeroed their free-tier quota
-# ("limit: 0" on every call) in favor of newer generations. gemini-3.5-flash is
-# the fuller model and gemini-3.5-flash-lite the faster/cheaper one, both
-# confirmed on the free tier as of 2026-07. The "-latest" aliases below track
-# whichever generation Google currently points them at, so they serve as a
-# fallback that shouldn't go stale the same way a pinned version eventually
-# does. Pin an exact version instead of an alias if you need reproducible
-# output across a deployment's lifetime.
-GEMINI_FLASH = ModelConfig("gemini-3.5-flash", 0.0, ModelProvider.GEMINI, 1_000_000)
-GEMINI_FLASH_LITE = ModelConfig("gemini-3.5-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
+# ("limit: 0" on every call) in favor of newer generations.
+#
+# gemini-2.5-flash-lite returns HTTP 200 on a raw REST call but consistently
+# 404s ("no longer available to new users") through the actual chat-completion
+# path used here - confirmed by hitting it live twice, minutes apart, both
+# times 404. It is kept in the chain (RotatingChatModel now falls through a
+# 404 to the next model rather than crashing) but deliberately NOT listed
+# first, so a normal request doesn't eat a wasted round trip on it every time.
+# gemini-3.1-flash-lite is listed first instead: confirmed working live.
+# The "-latest" alias at the tail tracks whichever generation Google currently
+# points it at, so it serves as a fallback that shouldn't go stale the same
+# way a pinned version eventually does. Pin an exact version instead of an
+# alias if you need reproducible output across a deployment's lifetime.
+GEMINI_FLASH_LITE_31 = ModelConfig("gemini-3.1-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
+GEMINI_FLASH = ModelConfig("gemini-2.5-flash", 0.0, ModelProvider.GEMINI, 1_000_000)
+GEMINI_FLASH_LITE = ModelConfig("gemini-2.5-flash-lite", 0.0, ModelProvider.GEMINI, 1_000_000)
 GEMINI_FLASH_LATEST = ModelConfig("gemini-flash-latest", 0.0, ModelProvider.GEMINI, 1_000_000)
 PPLX_SONAR = ModelConfig("sonar", 0.0, ModelProvider.PERPLEXITY)
 
 # Groq free-tier models capable of the multi-step tool calling this agent
-# relies on. gpt-oss-120b is the strongest all-round option for agentic/tool
-# use on Groq's free tier; llama-3.3-70b-versatile is kept as a fallback since
-# it was the previously-verified choice and Groq's free-tier lineup changes
-# periodically, same as Gemini's above.
-GROQ_GPT_OSS_120B = ModelConfig("openai/gpt-oss-120b", 0.0, ModelProvider.GROQ, 131_000)
+# relies on, smallest/cheapest first for the same reason as the Gemini order
+# above: llama-3.1-8b-instant has Groq's highest free-tier RPM, so it takes
+# most of the traffic and leaves gpt-oss-20b's quota for when 8b is limited.
+GROQ_LLAMA_3_1_8B = ModelConfig("llama-3.1-8b-instant", 0.0, ModelProvider.GROQ, 128_000)
+GROQ_GPT_OSS_20B = ModelConfig("openai/gpt-oss-20b", 0.0, ModelProvider.GROQ, 131_000)
 LLAMA_3_3_70B = ModelConfig("llama-3.3-70b-versatile", 0.0, ModelProvider.GROQ, 128_000)
 
 
@@ -105,13 +112,15 @@ class Config:
 
     # The model tried first. Any provider in FALLBACK_MODELS is used only after
     # every key for the preceding model has been exhausted or rate-limited.
-    MODEL = GEMINI_FLASH
+    MODEL = GEMINI_FLASH_LITE_31
 
     # Ordered fallbacks. Each entry must have credentials to be considered.
     FALLBACK_MODELS = [
+        GEMINI_FLASH,
         GEMINI_FLASH_LITE,
         GEMINI_FLASH_LATEST,
-        GROQ_GPT_OSS_120B,
+        GROQ_LLAMA_3_1_8B,
+        GROQ_GPT_OSS_20B,
         LLAMA_3_3_70B,
         PPLX_SONAR,
         QWEN_2_5,

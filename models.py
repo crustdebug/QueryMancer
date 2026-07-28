@@ -15,6 +15,30 @@ from config import Config, ModelConfig, ModelProvider
 from custom_logging import log
 from key_pool import KeyPool, PoolExhausted
 
+# Substrings identifying "this model does not exist / isn't available to this
+# account" - HTTP 404 from Gemini when a model has been deprecated or was
+# never enabled for the project, or the equivalent from other providers. This
+# is not a per-key problem (every key in the pool would see the same error,
+# since the model itself is the issue), so KeyPool correctly does not retry
+# other keys for it - but it also should not crash the whole request when
+# there are other models configured to fall back to. Caught once here, at the
+# model level, rather than added to key_pool's per-key classification.
+_MODEL_UNAVAILABLE_MARKERS = (
+    "404",
+    "not_found",
+    "not found",
+    "no longer available",
+    "model not found",
+    "does not exist",
+    "unknown model",
+    "unsupported model",
+)
+
+
+def _model_is_unavailable(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in _MODEL_UNAVAILABLE_MARKERS)
+
 
 def create_llm(model_config: ModelConfig, api_key: Optional[str] = None) -> BaseChatModel:
     """Build a chat model for one provider, using the supplied API key."""
@@ -162,6 +186,15 @@ class RotatingChatModel:
                         f"[yellow]{model.provider.value}/{model.name} exhausted; "
                         f"falling back to the next model.[/yellow]"
                     )
+                continue
+            except Exception as error:  # noqa: BLE001 - re-raised below if not model-unavailable
+                if not _model_is_unavailable(error):
+                    raise
+                errors.append(str(error))
+                log(
+                    f"[red]{model.provider.value}/{model.name} is not available "
+                    f"({error}); falling back to the next model.[/red]"
+                )
                 continue
 
             if self.active_model is not model:
