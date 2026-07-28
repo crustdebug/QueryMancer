@@ -1,0 +1,41 @@
+# Render deployment blueprint.
+#
+# Deploy: push this file, then in the Render dashboard choose
+# "New +" -> "Blueprint" and point it at this repository.
+#
+# The free plan sleeps after ~15 minutes of inactivity. Sessions and the
+# answer cache live in process memory, so a sleep disconnects everyone -
+# users re-enter their database details on the next visit. That is fine for
+# a public demo and not fine for a tool a team relies on; see README.
+services:
+  - type: web
+    name: querymancer
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    # $PORT is assigned by Render and must be honoured, or the deploy is
+    # marked unhealthy. One worker: the answer cache and the key pool's
+    # cooldown state are per-process, so a second worker would keep its own
+    # copy of both.
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # Generated once by Render and kept across deploys. Visitors need this
+      # code to reach the app; read it from the dashboard and share it with
+      # whoever should have access. Remove this block to run fully open.
+      - key: QUERYMANCER_ACCESS_CODE
+        generateValue: true
+      # Render terminates TLS at its edge and forwards over plain HTTP, so
+      # the app sees http:// internally. It honours X-Forwarded-Proto, but
+      # forcing the flag on removes any doubt for a public deployment.
+      - key: QUERYMANCER_FORCE_SECURE_COOKIE
+        value: "1"
+      # Set these in the dashboard, not here - never commit an API key.
+      # Comma-separated values are supported for key rotation.
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

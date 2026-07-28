@@ -101,8 +101,21 @@ app = FastAPI(title="QueryMancer", docs_url=None, redoc_url=None)
 
 
 # Paths reachable without the access code: the unlock page itself, the
-# endpoint that checks the code, and the stylesheet that renders it.
-_PUBLIC_PATHS = {"/unlock", "/api/unlock", "/assets/style.css"}
+# endpoint that checks the code, the stylesheet that renders it, and the
+# health check - a platform probe has no cookie, and gating it would make
+# every deploy look unhealthy and get rolled back.
+_PUBLIC_PATHS = {"/unlock", "/api/unlock", "/assets/style.css", "/healthz"}
+
+
+@app.get("/healthz")
+def healthz():
+    """Liveness probe for the hosting platform.
+
+    Deliberately reports nothing about configuration: it is reachable without
+    the access code, so it must not disclose which providers are configured
+    or whether a database is attached.
+    """
+    return {"status": "ok"}
 
 
 @app.middleware("http")

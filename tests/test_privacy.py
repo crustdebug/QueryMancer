@@ -123,6 +123,21 @@ def test_the_unlock_page_itself_is_reachable_while_locked(locked):
     assert locked.get("/unlock").status_code == 200
 
 
+def test_the_health_check_is_reachable_while_locked(locked):
+    """A platform health probe carries no cookie. If the gate blocked it,
+    every deploy would look unhealthy and be rolled back."""
+    response = locked.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_the_health_check_discloses_nothing_about_configuration(locked):
+    """It is reachable without the access code, so it must not leak which
+    providers are configured or whether a database is attached."""
+    body = locked.get("/healthz").json()
+    assert set(body) == {"status"}
+
+
 def test_no_access_code_configured_leaves_the_app_open(monkeypatch):
     """Local use must need no setup."""
     monkeypatch.setattr(server, "ACCESS_CODE", "")
