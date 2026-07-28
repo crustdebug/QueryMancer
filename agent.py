@@ -1,89 +1,140 @@
+"""The agent loop: turn a natural-language question into a SQL-backed answer."""
+
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
-from custom_logging import green_border_style, log_panel
+from config import Config
+from custom_logging import green_border_style, log, log_panel
 from tools import call_tool
 
-from datetime import datetime
+SYSTEM_PROMPT = """
+You are Querymancer, an expert PostgreSQL analyst. You turn natural-language
+questions into correct SQL and answer them in as few tool calls as possible.
 
-# It's good practice to define the prompt as a multi-line f-string
-# so you can inject dynamic information like the current date.
+## Method
+1. Identify the tables you need. Call `list_tables` only if the names are not
+   already obvious or known from earlier in this conversation.
+2. Call `describe_table` before writing SQL against a table you have not yet
+   inspected. Never invent column names.
+3. Call `get_foreign_key_relationships` before any JOIN.
+4. When the user names a company or person, start with `search_entity_by_name`.
+5. When filtering on a category, use `get_distinct_column_values` first so you
+   filter on values that actually exist.
+6. Run the final query with `execute_sql`.
 
-SYSTEM_PROMPT = f"""
-You are Querymancer, a master database engineer with exceptional expertise in PostgreSQL query construction and optimization.
-Your purpose is to act as an autonomous agent that transforms natural language requests into precise, efficient SQL queries and returns the answer in the minimum number of steps.
+## Efficiency
+Every tool call costs a request against a limited quota. Batch your discovery:
+if you need three tables described, ask for all three before writing SQL rather
+than alternating between describing and querying. Prefer one well-formed query
+over several exploratory ones. Do not re-fetch a schema you already have in
+this conversation - reread it from the messages above.
 
-<core_strategy_and_tools>
-Your primary goal is to minimize tool calls. Formulate a plan to answer the user's request using the tools below. Provide a `reasoning` parameter for every tool call.
+## Rules
+- Include a `reasoning` argument on every tool call.
+- Only read-only SELECT queries. Never attempt to modify data.
+- Select the columns you need, not `SELECT *`, except in `sample_table`.
+- Always put a LIMIT on queries that could return many rows.
+- Use explicit JOIN syntax with the keys from `get_foreign_key_relationships`.
+- If a query errors or returns nothing, read the error, fix your assumption,
+  and try once more. Do not repeat an identical failing query.
+- If a tool reports a table is not permitted, do not retry it. Work with the
+  tables you are allowed to read, and say so if the question cannot be answered.
 
-### Strategic Principles
-1.  **Be Efficient First**: For simple queries where table names seem obvious (e.g., user mentions "customers"), you can directly use `describe_table` on that presumed name. You do not always need to call `list_tables` first.
-2.  **Be Methodical for Complexity**: For complex or ambiguous queries, fall back to a more cautious approach: `list_tables` -> `describe_table` -> `get_foreign_key_relationships` -> `execute_sql`.
-3.  **Prioritize High-Value Tools**:
-    * If the user asks about a company or person, your **first step** should almost always be `search_entity_by_name`.
-    * You **must** use `get_foreign_key_relationships` before writing any query with a `JOIN`.
+## Answering
+Write for business analysts who do not read SQL. Lead with the answer. Use a
+Markdown table for multi-row results. State the figure and its units plainly.
+Briefly note which tables the answer came from. If results were truncated, say
+so. Never present a guess as fact - if the data is ambiguous, say what is
+ambiguous.
 
-### Available Tools
-* **`list_tables`**: Lists all table names. Use this when you have no idea what tables are available.
-* **`describe_table`**: Shows a table's schema (columns and types).
-* **`get_foreign_key_relationships`**: **CRITICAL:** Reveals how tables join. **MUST** use before writing a JOIN.
-* **`search_entity_by_name`**: **HIGH-PRIORITY:** Searches for a name in BOTH `customer_profile` and `vendor_profile`. Use this first for any query about a specific company or person.
-* **`get_distinct_column_values`**: Finds unique values in a column. Use before writing a `WHERE` clause with categorical data (e.g., `status='APPROVED'`).
-* **`fuzzy_full_text_search`**: Finds approximate matches in a *single* specified table.
-* **`sample_table`**: Shows a few sample rows to clarify ambiguous columns. Use sparingly.
-* **`explain_query`**: Validates a query's syntax and plan *before* execution. Use for complex JOINs as a final check.
-* **`execute_sql`**: Executes the final, read-only `SELECT` query. This is your last step.
+Today's date is {today}.
+""".strip()
 
-</core_strategy_and_tools>
 
-<rules_of_engagement>
-    1.  **Reasoning is Mandatory**: For every tool call, you **must** include a detailed `reasoning` parameter.
-    2.  **NEVER GUESS**: Do not guess join keys or filter values. Use the discovery tools to find this information.
-    3.  **Query Smart**: When using `execute_sql`, select only the columns needed (no `SELECT *`).
-    4.  **Self-Correct**: If a query fails or returns no results, re-examine the schema and your plan. Do not give up.
-</rules_of_engagement>
+def build_system_prompt() -> str:
+    return SYSTEM_PROMPT.format(today=datetime.now().strftime("%Y-%m-%d"))
 
-<few_shot_example>
-**User Query**: "Show me the most recent invoice for 'Innovate LLC'."
-
-**Your Efficient Thought Process**:
-1.  The user is asking about a specific company, 'Innovate LLC'. My first and most efficient action is to use the unified search tool to identify them.
-    * `search_entity_by_name(reasoning="I need to find out if 'Innovate LLC' is a customer or a vendor and get their ID.", entity_name='Innovate LLC')`
-2.  The tool output shows they are a customer with ID `cust_8821`. Now I need to find their invoices. The table name is likely `customer_invoice`. I will describe it to confirm its structure and find the date and status columns.
-    * `describe_table(reasoning="Now that I have the customer ID, I need to find the schema of the invoice table to construct the final query.", table_name='customer_invoice')`
-3.  The schema confirms the table has `customer_coa_id` and `invoice_date` columns. I now have all the information required to build the final query. I do not need any more tool calls.
-    * `execute_sql(reasoning="I have the customer's ID and the relevant column names from the invoice table, so I can now retrieve their most recent invoice.", sql_query="SELECT * FROM customer_invoice WHERE customer_coa_id = 'cust_8821' ORDER BY invoice_date DESC LIMIT 1;")`
-</few_shot_example>
-
-Today's date is {datetime.now().strftime("%Y-%m-%d")}.
-
-Your responses must be formatted as Markdown. Your target audience is business analysts and data scientists who may not be familiar with SQL syntax, so present final answers clearly, using tables or lists where appropriate.""".strip()
 
 def create_history() -> List[BaseMessage]:
-    return [SystemMessage(content=SYSTEM_PROMPT)]
+    return [SystemMessage(content=build_system_prompt())]
+
+
+def trim_history(
+    messages: List[BaseMessage], max_messages: Optional[int] = None
+) -> List[BaseMessage]:
+    """Keep the system prompt plus the most recent turns.
+
+    A long conversation would otherwise resend every prior message on each call,
+    so cost grows quadratically. Trimming keeps recent context, which is what
+    follow-up questions actually depend on.
+
+    Tool messages are dropped when trimming, because an orphaned ToolMessage
+    whose originating AIMessage has been cut is rejected by most providers.
+    """
+    limit = max_messages or Config.MAX_HISTORY_MESSAGES
+    system = [m for m in messages[:1] if isinstance(m, SystemMessage)]
+    rest = messages[len(system) :]
+    if len(rest) <= limit:
+        return list(messages)
+
+    kept = [m for m in rest if not isinstance(m, ToolMessage)]
+    kept = [m for m in kept if not (isinstance(m, AIMessage) and m.tool_calls)]
+    return system + kept[-limit:]
+
 
 def ask(
-    query: str, history: List[BaseMessage], llm: BaseChatModel, max_iterations: int = 10
+    query: str,
+    history: List[BaseMessage],
+    llm,
+    max_iterations: Optional[int] = None,
 ) -> str:
+    """Run the tool-calling loop until the model produces a final answer.
+
+    `history` is updated in place with the user message and the final answer, so
+    the caller keeps a clean transcript without the intermediate tool traffic.
+    """
+    max_iterations = max_iterations or Config.MAX_AGENT_ITERATIONS
     log_panel(title="User Request", content=f"Query: {query}", border_style=green_border_style)
 
-    n_iterations = 0
-    messages = history.copy()
-    messages.append(HumanMessage(content=query))
+    history.append(HumanMessage(content=query))
+    # Work on a trimmed copy; tool traffic stays out of the durable history.
+    messages: List[BaseMessage] = trim_history(history)
 
-    while n_iterations < max_iterations:
+    for iteration in range(max_iterations):
         response = llm.invoke(messages)
         messages.append(response)
-        if not response.tool_calls:
-            return response.content
-        for tool_call in response.tool_calls:
-            response = call_tool(tool_call)
-            messages.append(response)
-        n_iterations += 1
 
-    raise RuntimeError(
-        "Maximum number of iterations reached. Please try again with a different query."
+        tool_calls = getattr(response, "tool_calls", None)
+        if not tool_calls:
+            answer = response.content if isinstance(response.content, str) else str(response.content)
+            history.append(AIMessage(content=answer))
+            return answer
+
+        for tool_call in tool_calls:
+            messages.append(call_tool(tool_call))
+
+        log(f"[dim]Iteration {iteration + 1}/{max_iterations} complete.[/dim]")
+
+    # Out of iterations: ask for the best answer available from what we have,
+    # rather than failing outright and wasting the work already paid for.
+    log("[yellow]Iteration limit reached; requesting a final answer.[/yellow]")
+    messages.append(
+        HumanMessage(
+            content=(
+                "You have reached the tool-call limit. Answer now using only the "
+                "information gathered above. State clearly what remains uncertain."
+            )
+        )
     )
+    final = llm.invoke(messages)
+    answer = final.content if isinstance(final.content, str) else str(final.content)
+    history.append(AIMessage(content=answer))
+    return answer

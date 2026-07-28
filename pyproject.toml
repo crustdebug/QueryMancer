@@ -1,14 +1,20 @@
 [project]
 name = "querymancer"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI Agent that lets you talk to your database"
 readme = "README.md"
-require-python = ">=3.12"
+requires-python = ">=3.12"
 
 dependencies = [
-  "langchain>=0.3.21",
+  "langchain>=1.0.0",
+  "langchain-core>=1.0.0",
+  "langchain-google-genai>=2.0.0",
   "langchain-groq>=0.3.1",
   "langchain-ollama>=0.3.0",
+  "langchain-together>=0.3.0",
+  "langchain-perplexity>=1.0.0",
+  "psycopg2-binary>=2.9.9",
+  "pandas>=2.2.0",
   "pydantic>=2.11.1",
   "python-dotenv>=1.1.0",
   "rich>=13.9.4",
@@ -20,6 +26,7 @@ dependencies = [
 dev = [
   "faker>=37.1.0",
   "pre-commit>=4.0.1",
+  "pytest>=8.0.0",
   "ruff>=0.8.3",
 ]
 
@@ -30,4 +37,7 @@ target-version = "py312"
 [tool.pytest.ini_options]
 pythonpath = [
   "."
+]
+testpaths = [
+  "tests"
 ]
