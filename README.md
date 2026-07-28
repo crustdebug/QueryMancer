@@ -1,4 +1,4 @@
-# Querio: SQL AI Agent
+# QueryMancer: SQL AI Agent
 
 Ask questions about your database in plain English. An LLM agent explores the
 schema with read-only tools, writes the SQL itself, runs it, and answers with
@@ -34,13 +34,13 @@ A single-page app served by the FastAPI backend — no build step, no npm.
 - **Ask in plain English.** Answers arrive as formatted text, with results
   rendered as a real table and a bar chart when the shape suits it.
 - **View SQL** under each answer shows the exact query that ran, including any
-  names Querio corrected for you.
+  names QueryMancer corrected for you.
 - **Recent questions** in the sidebar keeps each conversation; follow-up
   questions stay in context.
 - **Starter questions** are generated from your actual tables and columns, not
   hardcoded, so they name things that really exist.
 
-The layout follows the design in [ui/Querio.dc.html](ui/Querio.dc.html); that
+The layout follows the design in [ui/QueryMancer.dc.html](ui/QueryMancer.dc.html); that
 file is the original mock and is not used at runtime.
 
 To check your keys work before starting:

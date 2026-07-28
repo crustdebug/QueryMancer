@@ -1,5 +1,5 @@
 [project]
-name = "querio"
+name = "querymancer"
 version = "0.3.0"
 description = "Ask any SQL database questions in plain English"
 readme = "README.md"

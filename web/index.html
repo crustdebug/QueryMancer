@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Querio</title>
+<title>QueryMancer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -17,7 +17,7 @@
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-mark">Q</div>
-      <div class="brand-name">Querio</div>
+      <div class="brand-name">QueryMancer</div>
     </div>
 
     <div class="sidebar-connection">
@@ -44,19 +44,12 @@
       <div id="history-list" class="history-list"></div>
     </div>
 
-    <div id="schema-panel" class="schema-panel is-hidden">
-      <button id="btn-toggle-schema" class="schema-toggle" type="button">
-        <span id="schema-count">Tables</span>
-        <span class="chevron">▾</span>
-      </button>
-      <div id="schema-tables" class="schema-tables is-hidden"></div>
-    </div>
   </aside>
 
   <!-- Main -->
   <main class="main">
     <header class="topbar">
-      <div id="header-title" class="header-title">Querio</div>
+      <div id="header-title" class="header-title">QueryMancer</div>
       <div id="header-badge" class="badge is-hidden">
         <span class="dot dot-live"></span>
         <span id="badge-text"></span>
@@ -68,7 +61,7 @@
       <div class="hero-mark">DB</div>
       <div class="hero-copy">
         <h1>Connect your database to get started</h1>
-        <p>Attach a database and start asking questions in plain English. Querio writes and runs the queries for you.</p>
+        <p>Attach a database and start asking questions in plain English. QueryMancer writes and runs the queries for you.</p>
       </div>
       <div id="engine-grid" class="engine-grid"></div>
       <button id="btn-use-url" class="link-button muted" type="button">Or paste a connection string</button>
@@ -93,6 +86,41 @@
       </div>
     </section>
   </main>
+
+  <!-- Right: the connected database's structure -->
+  <aside id="inspector" class="inspector is-hidden">
+    <div class="inspector-head">
+      <div class="inspector-title">Database</div>
+      <button id="btn-refresh-schema" class="icon-button" type="button" title="Reload schema">↻</button>
+    </div>
+
+    <div class="inspector-db">
+      <div id="inspector-name" class="inspector-db-name"></div>
+      <div id="inspector-engine" class="inspector-db-meta"></div>
+    </div>
+
+    <div class="inspector-stats">
+      <div class="stat">
+        <div id="stat-tables" class="stat-value">—</div>
+        <div class="stat-label">Tables</div>
+      </div>
+      <div class="stat">
+        <div id="stat-rows" class="stat-value">—</div>
+        <div class="stat-label">Rows</div>
+      </div>
+      <div class="stat">
+        <div id="stat-keys" class="stat-value">—</div>
+        <div class="stat-label">Links</div>
+      </div>
+    </div>
+
+    <div class="inspector-search">
+      <input id="table-search" type="search" placeholder="Search tables…" autocomplete="off">
+    </div>
+
+    <div class="inspector-label">TABLES</div>
+    <div id="table-list" class="table-list"></div>
+  </aside>
 </div>
 
 <!-- Connect modal -->
@@ -153,7 +181,7 @@
 
       <div id="modal-error" class="modal-error is-hidden"></div>
 
-      <div class="modal-note">Querio connects read-only and never modifies your data. Your credentials stay in this session and are never written to disk.</div>
+      <div class="modal-note">QueryMancer connects read-only and never modifies your data. Your credentials stay in this session and are never written to disk.</div>
 
       <div class="modal-actions">
         <button id="btn-toggle-url" class="ghost-button" type="button">Use connection string</button>

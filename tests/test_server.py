@@ -83,7 +83,7 @@ def connect(client, path):
 def test_index_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "Querio" in response.text
+    assert "QueryMancer" in response.text
 
 
 def test_state_lists_engines_before_connecting(client):

@@ -1,4 +1,4 @@
-"""HTTP API and static host for the Querio interface.
+"""HTTP API and static host for the QueryMancer interface.
 
 Run with:  python -m uvicorn server:app --reload
 
@@ -35,12 +35,12 @@ from key_pool import PoolExhausted  # noqa: E402
 from models import RotatingChatModel  # noqa: E402
 from session import Message, NotConnected  # noqa: E402
 
-log = logging.getLogger("querio")
+log = logging.getLogger("querymancer")
 
 STATIC_DIR = Path(__file__).parent / "web"
-COOKIE_NAME = "querio_session"
+COOKIE_NAME = "querymancer_session"
 
-app = FastAPI(title="Querio", docs_url=None, redoc_url=None)
+app = FastAPI(title="QueryMancer", docs_url=None, redoc_url=None)
 
 # One model per process. The key pool's cooldown state lives on it, so
 # rebuilding per request would forget which keys are rate-limited.
@@ -120,9 +120,9 @@ def _title_from(question: str) -> str:
 
 
 @app.get("/api/state")
-def get_state(querio_session: Optional[str] = Cookie(default=None)):
+def get_state(querymancer_session: Optional[str] = Cookie(default=None)):
     """Everything the UI needs to render on load."""
-    session = session_module.store.get_or_create(querio_session)
+    session = session_module.store.get_or_create(querymancer_session)
 
     with session_module.use_session(session):
         state = _connection_state(session)
@@ -157,10 +157,10 @@ def _suggestions_for(session) -> List[str]:
 @app.post("/api/connect")
 def connect(
     payload: dict = Body(...),
-    querio_session: Optional[str] = Cookie(default=None),
+    querymancer_session: Optional[str] = Cookie(default=None),
 ):
     """Connect a database for this session."""
-    session = session_module.store.get_or_create(querio_session)
+    session = session_module.store.get_or_create(querymancer_session)
 
     with session_module.use_session(session):
         try:
@@ -198,8 +198,8 @@ def connect(
 
 
 @app.post("/api/disconnect")
-def disconnect(querio_session: Optional[str] = Cookie(default=None)):
-    session = session_module.store.get_or_create(querio_session)
+def disconnect(querymancer_session: Optional[str] = Cookie(default=None)):
+    session = session_module.store.get_or_create(querymancer_session)
     with session_module.use_session(session):
         session_module.disconnect()
         schema_module.clear_cache()
@@ -207,9 +207,9 @@ def disconnect(querio_session: Optional[str] = Cookie(default=None)):
 
 
 @app.get("/api/schema")
-def get_schema_overview(querio_session: Optional[str] = Cookie(default=None)):
+def get_schema_overview(querymancer_session: Optional[str] = Cookie(default=None)):
     """Tables in the connected database, for the schema panel."""
-    session = session_module.store.get_or_create(querio_session)
+    session = session_module.store.get_or_create(querymancer_session)
     with session_module.use_session(session):
         if session.connection is None:
             return _session_response({"tables": []}, session, Response())
@@ -219,12 +219,28 @@ def get_schema_overview(querio_session: Optional[str] = Cookie(default=None)):
                 {
                     "name": t.qualified,
                     "rows": t.estimated_rows,
-                    "columns": [c.name for c in t.columns],
+                    # Full column detail for the inspector panel: name, type,
+                    # and whether it is part of the primary key.
+                    "columns": [
+                        {
+                            "name": c.name,
+                            "type": c.data_type,
+                            "nullable": c.nullable,
+                            "primaryKey": c.name in t.primary_key,
+                        }
+                        for c in t.columns
+                    ],
                 }
                 for t in sorted(db.tables, key=lambda t: (-t.estimated_rows, t.name.lower()))
             ]
             return _session_response(
-                {"tables": tables, "foreignKeys": len(db.foreign_keys)}, session, Response()
+                {
+                    "tables": tables,
+                    "foreignKeys": len(db.foreign_keys),
+                    "totalRows": sum(t.estimated_rows for t in db.tables),
+                },
+                session,
+                Response(),
             )
         except Exception as error:  # noqa: BLE001
             return _session_response(
@@ -234,9 +250,9 @@ def get_schema_overview(querio_session: Optional[str] = Cookie(default=None)):
 
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(
-    conversation_id: str, querio_session: Optional[str] = Cookie(default=None)
+    conversation_id: str, querymancer_session: Optional[str] = Cookie(default=None)
 ):
-    session = session_module.store.get_or_create(querio_session)
+    session = session_module.store.get_or_create(querymancer_session)
     conversation = session.conversations.get(conversation_id)
     if conversation is None:
         return _session_response({"error": "Not found"}, session, Response())
@@ -244,8 +260,8 @@ def get_conversation(
 
 
 @app.post("/api/conversations")
-def new_conversation(querio_session: Optional[str] = Cookie(default=None)):
-    session = session_module.store.get_or_create(querio_session)
+def new_conversation(querymancer_session: Optional[str] = Cookie(default=None)):
+    session = session_module.store.get_or_create(querymancer_session)
     conversation = session.new_conversation()
     return _session_response(conversation.to_dict(), session, Response())
 
@@ -258,10 +274,10 @@ def _safe_error(session, error: Exception) -> str:
 @app.post("/api/ask")
 async def ask_question(
     payload: dict = Body(...),
-    querio_session: Optional[str] = Cookie(default=None),
+    querymancer_session: Optional[str] = Cookie(default=None),
 ):
     """Answer one question, returning the reply plus the SQL that produced it."""
-    session = session_module.store.get_or_create(querio_session)
+    session = session_module.store.get_or_create(querymancer_session)
     question = (payload.get("question") or "").strip()
     conversation_id = payload.get("conversationId")
 
@@ -346,9 +362,9 @@ def _run_agent(session, conversation, question: str) -> Message:
 
 
 @app.get("/api/usage")
-def usage(querio_session: Optional[str] = Cookie(default=None)):
+def usage(querymancer_session: Optional[str] = Cookie(default=None)):
     """Token usage and key-pool status."""
-    session = session_module.store.get_or_create(querio_session)
+    session = session_module.store.get_or_create(querymancer_session)
     try:
         model = get_model()
     except Exception:  # noqa: BLE001

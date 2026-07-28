@@ -1,4 +1,4 @@
-/* Querio front end.
+/* QueryMancer front end.
  *
  * Talks to the FastAPI backend in server.py. The session id lives in an
  * HttpOnly cookie, so nothing here reads or stores credentials: the connect
@@ -32,6 +32,9 @@
     connectionEngine: "",
     connectionEngineLabel: "",
     connectionFullName: "",
+    // The connected database's structure, shown in the right inspector.
+    tables: [],
+    openTables: new Set(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -43,9 +46,15 @@
     connEmpty: $("conn-empty"),
     sidebarConversations: $("sidebar-conversations"),
     historyList: $("history-list"),
-    schemaPanel: $("schema-panel"),
-    schemaCount: $("schema-count"),
-    schemaTables: $("schema-tables"),
+    inspector: $("inspector"),
+    inspectorName: $("inspector-name"),
+    inspectorEngine: $("inspector-engine"),
+    statTables: $("stat-tables"),
+    statRows: $("stat-rows"),
+    statKeys: $("stat-keys"),
+    tableSearch: $("table-search"),
+    tableList: $("table-list"),
+    btnRefreshSchema: $("btn-refresh-schema"),
     headerTitle: $("header-title"),
     headerBadge: $("header-badge"),
     badgeText: $("badge-text"),
@@ -72,7 +81,6 @@
     btnUseUrl: $("btn-use-url"),
     btnChange: $("btn-change-connection"),
     btnNew: $("btn-new-question"),
-    btnToggleSchema: $("btn-toggle-schema"),
     fHost: $("f-host"),
     fPort: $("f-port"),
     fDatabase: $("f-database"),
@@ -216,7 +224,7 @@
     el.connCard.classList.toggle("is-hidden", !state.connected);
     el.connEmpty.classList.toggle("is-hidden", state.connected);
     el.sidebarConversations.classList.toggle("is-hidden", !state.connected);
-    el.schemaPanel.classList.toggle("is-hidden", !state.connected);
+    el.inspector.classList.toggle("is-hidden", !state.connected);
     el.headerBadge.classList.toggle("is-hidden", !state.connected);
     el.viewConnect.classList.toggle("is-hidden", state.connected);
     el.viewChat.classList.toggle("is-hidden", !state.connected);
@@ -237,7 +245,7 @@
       state.connectionEngine = "";
       state.connectionEngineLabel = "";
       state.connectionFullName = "";
-      el.headerTitle.textContent = "Querio";
+      el.headerTitle.textContent = "QueryMancer";
     }
   }
 
@@ -523,21 +531,96 @@
   }
 
   async function loadSchema() {
+    el.btnRefreshSchema.classList.add("is-busy");
     try {
       const data = await api("/api/schema");
-      const tables = data.tables || [];
-      el.schemaCount.textContent = `${tables.length} TABLE${tables.length === 1 ? "" : "S"}`;
-      el.schemaTables.innerHTML = "";
-      for (const table of tables) {
-        const row = document.createElement("div");
-        row.className = "schema-row";
-        row.innerHTML =
-          `<span title="${esc(table.columns.join(", "))}">${esc(table.name)}</span>` +
-          `<span>${table.rows ? table.rows.toLocaleString() : "—"}</span>`;
-        el.schemaTables.appendChild(row);
-      }
+      state.tables = data.tables || [];
+      el.statTables.textContent = state.tables.length.toLocaleString();
+      el.statRows.textContent = compactNumber(
+        data.totalRows != null
+          ? data.totalRows
+          : state.tables.reduce((sum, t) => sum + (t.rows || 0), 0)
+      );
+      el.statKeys.textContent = (data.foreignKeys || 0).toLocaleString();
+      el.inspectorName.textContent = state.connectionName;
+      el.inspectorName.title = state.connectionFullName;
+      el.inspectorEngine.textContent = state.connectionEngineLabel;
+      renderTableList();
     } catch (error) {
-      el.schemaCount.textContent = "TABLES";
+      state.tables = [];
+      renderTableList();
+    } finally {
+      el.btnRefreshSchema.classList.remove("is-busy");
+    }
+  }
+
+  function compactNumber(value) {
+    const n = Number(value) || 0;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return String(n);
+  }
+
+  /** The table list, filtered by the search box. */
+  function renderTableList() {
+    const query = (el.tableSearch.value || "").trim().toLowerCase();
+    const matches = query
+      ? state.tables.filter(
+          (t) =>
+            t.name.toLowerCase().includes(query) ||
+            (t.columns || []).some((c) => c.name.toLowerCase().includes(query))
+        )
+      : state.tables;
+
+    el.tableList.innerHTML = "";
+
+    if (!matches.length) {
+      const empty = document.createElement("div");
+      empty.className = "inspector-empty";
+      empty.textContent = state.tables.length
+        ? "No tables match that search."
+        : "No tables found in this database.";
+      el.tableList.appendChild(empty);
+      return;
+    }
+
+    for (const table of matches) {
+      const item = document.createElement("div");
+      const open = state.openTables.has(table.name);
+      item.className = "table-item" + (open ? " is-open" : "");
+
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "table-head";
+      head.innerHTML =
+        `<span class="table-caret">▶</span>` +
+        `<span class="table-name" title="${esc(table.name)}">${esc(table.name)}</span>` +
+        `<span class="table-rows">${table.rows ? compactNumber(table.rows) : "—"}</span>`;
+      head.addEventListener("click", () => {
+        if (state.openTables.has(table.name)) state.openTables.delete(table.name);
+        else state.openTables.add(table.name);
+        renderTableList();
+      });
+      item.appendChild(head);
+
+      if (open) {
+        const columns = document.createElement("div");
+        columns.className = "column-list";
+        for (const column of table.columns || []) {
+          const row = document.createElement("div");
+          row.className = "column-row";
+          // Primary-key columns are highlighted: they are what joins and
+          // lookups key off, so they are worth spotting at a glance.
+          row.innerHTML =
+            `<span class="column-name${column.primaryKey ? " is-key" : ""}" ` +
+            `title="${esc(column.name)}">${esc(column.name)}</span>` +
+            `<span class="column-type">${esc(column.type || "")}</span>`;
+          columns.appendChild(row);
+        }
+        item.appendChild(columns);
+      }
+
+      el.tableList.appendChild(item);
     }
   }
 
@@ -557,7 +640,7 @@
     if (data.error) return;
     state.activeId = data.id;
     state.messages = data.messages || [];
-    el.headerTitle.textContent = data.title || "Querio";
+    el.headerTitle.textContent = data.title || "QueryMancer";
     // Reflect the database this thread belongs to, which may differ from the
     // one currently connected.
     setHeaderDatabase(data.database, data.engine, data.engineLabel);
@@ -789,9 +872,8 @@
     state.usingUrl = !state.usingUrl;
     applyModalMode();
   });
-  el.btnToggleSchema.addEventListener("click", () => {
-    el.schemaTables.classList.toggle("is-hidden");
-  });
+  el.tableSearch.addEventListener("input", renderTableList);
+  el.btnRefreshSchema.addEventListener("click", () => loadSchema());
 
   el.modal.addEventListener("mousedown", (event) => {
     if (event.target === el.modal) closeModal();
@@ -802,6 +884,6 @@
 
   loadState().catch((error) => {
     document.body.innerHTML =
-      `<div style="padding:40px;font-family:system-ui">Could not load Querio: ${esc(error.message)}</div>`;
+      `<div style="padding:40px;font-family:system-ui">Could not load QueryMancer: ${esc(error.message)}</div>`;
   });
 })();

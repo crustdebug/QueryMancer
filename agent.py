@@ -16,7 +16,7 @@ from custom_logging import green_border_style, log, log_panel
 from tools import call_tool
 
 SYSTEM_PROMPT = """
-You are Querio, an expert SQL analyst. You turn natural-language questions into
+You are QueryMancer, an expert SQL analyst. You turn natural-language questions into
 correct SQL and answer them in as few tool calls as possible.
 
 You have no prior knowledge of this database. Its tables and columns may follow
