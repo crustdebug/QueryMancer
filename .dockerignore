@@ -1,0 +1,20 @@
+# Keep the image small and, more importantly, keep secrets out of it: a .env
+# copied into a layer stays there even if a later layer deletes it.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+tests/
+docs/
+*.db
+*.sqlite
+*.sqlite3

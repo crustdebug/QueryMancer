@@ -1,15 +1,46 @@
-# QueryMancer: SQL AI Agent
+<div align="center">
 
-Ask questions about your database in plain English. An LLM agent explores the
-schema with read-only tools, writes the SQL itself, runs it, and answers with
-the results — plus the exact query it ran, so you can check its work.
+# QueryMancer
 
-Connect **any** database from the app — PostgreSQL, MySQL/MariaDB, SQLite,
-SQL Server or Oracle — with a form or a connection string. The schema is
-discovered at runtime, so nothing about your tables is hardcoded and there is
-no configuration file to maintain.
+**Ask any SQL database questions in plain English.**
 
-## Setup
+An LLM agent explores your schema with read-only tools, writes the SQL itself,
+runs it, and answers with the results — plus the exact query it ran, so you can
+check its work.
+
+[**▶ Try the live demo**](https://querymancer.onrender.com) &nbsp;·&nbsp;
+[Architecture](#architecture) &nbsp;·&nbsp;
+[Engineering notes](#engineering-notes)
+
+[![Tests](https://img.shields.io/badge/tests-236%20passing-brightgreen)](tests/)
+[![Python](https://img.shields.io/badge/python-3.12+-blue)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+</div>
+
+![QueryMancer answering a question about a live PostgreSQL database](docs/images/querymancer.png)
+
+> The live demo ships with a sample store database — click **Try the sample
+> database** and ask away, no setup required. It is hosted on a free tier that
+> sleeps when idle, so the first request may take ~40 seconds to wake.
+
+## What it does
+
+Point it at PostgreSQL, MySQL/MariaDB, SQLite, SQL Server or Oracle — via a
+form or a connection string — and ask questions. The schema is discovered at
+runtime, so nothing about your tables is hardcoded and there is no
+configuration file to maintain.
+
+|  | |
+|---|---|
+| **Writes its own SQL** | An 8-step tool loop: inspect the schema, sample rows, learn categorical values, then query. Every statement it runs is shown to you. |
+| **Survives free-tier quotas** | Round-robin API-key rotation with per-key cooldowns, then automatic fallback across Gemini → Groq → Perplexity → local Ollama. |
+| **Fixes its own mistakes** | When the model writes `customer.customer_name` and the table is really `"Customer"."name"`, the query is rewritten against the live schema instead of failing. |
+| **Reads 100-table schemas** | Keyword scoring plus one-hop foreign-key traversal prunes the prompt to the tables a question actually needs. |
+| **Never writes to your data** | Read-only enforced twice: at the database session and by parsing every statement before it runs. |
+| **Keeps credentials off disk** | Held in server memory for one session, never persisted, never returned to the browser. |
+
+## Try it locally
 
 ```bash
 python -m venv .venv
@@ -40,15 +71,97 @@ A single-page app served by the FastAPI backend — no build step, no npm.
 - **Starter questions** are generated from your actual tables and columns, not
   hardcoded, so they name things that really exist.
 
-The layout follows the design in [ui/QueryMancer.dc.html](ui/QueryMancer.dc.html); that
-file is the original mock and is not used at runtime.
-
 To check your keys work before starting:
 
 ```bash
 python check_setup.py
 python check_setup.py postgresql://user:password@host:5432/db   # also test a database
 ```
+
+## Architecture
+
+```
+Browser ──── FastAPI (server.py) ──── RotatingChatModel (models.py)
+  │              │                          │
+  │              │                          ├── KeyPool ── round-robin, cooldowns
+  │              │                          └── fallback chain across providers
+  │              │
+  │              ├── AnswerCache ── repeat questions skip the LLM entirely
+  │              │
+  │              └── Session ── credentials in memory, one per browser
+  │                     │
+  │                     └── DatabaseConnection ── read-only, statement timeout
+  │                              │
+  └── HttpOnly cookie            ├── schema.py ── runtime introspection + pruning
+      (opaque session id)        ├── sql_repair.py ── fixes wrong identifiers
+                                 └── tools.py ── the 7 tools the agent may call
+```
+
+**The agent loop** (`agent.py`). The model is given seven read-only tools and
+iterates up to eight times: orient with `inspect_database`, drill in with
+`describe_table` or `sample_table`, check real values with
+`get_distinct_column_values`, then `execute_sql`. Each tool result is truncated
+before it re-enters the prompt, because in an agent loop the dominant cost is
+resending prior output on every step.
+
+| Module | Responsibility |
+|---|---|
+| [`agent.py`](agent.py) | The tool-calling loop and system prompt |
+| [`tools.py`](tools.py) | Seven read-only tools; read-only enforcement; query trace |
+| [`schema.py`](schema.py) | Runtime introspection, fuzzy name resolution, FK-subgraph pruning |
+| [`sql_repair.py`](sql_repair.py) | Rewrites wrong identifiers against the real schema |
+| [`models.py`](models.py) | Key rotation and cross-provider model fallback |
+| [`key_pool.py`](key_pool.py) | Per-key rate-limit classification and cooldowns |
+| [`connection.py`](connection.py) | Multi-engine connections, read-only, statement timeouts |
+| [`session.py`](session.py) | Per-browser sessions; credentials never touch disk |
+| [`answer_cache.py`](answer_cache.py) | TTL'd answer cache keyed by question + database |
+| [`server.py`](server.py) | HTTP API, access gate, static hosting |
+
+Roughly 3,500 lines of application code and 1,700 lines of tests, no frontend
+build step — the UI is hand-written HTML/CSS/JS served directly by FastAPI.
+
+## Engineering notes
+
+The interesting problems in this project were not "call an LLM" — they were
+everything around it.
+
+**Free-tier quotas are the real constraint.** A single Gemini key runs out
+quickly under an agent loop that makes up to eight calls per question. So keys
+rotate round-robin with per-key cooldowns, and the pool distinguishes failure
+modes that deserve different handling: a per-minute 429 benches a key for
+seconds, a per-day 429 benches it for far longer (Gemini reports which in the
+error body, along with a `retryDelay` that is trusted over any guess), an auth
+failure retires the key permanently, and a 503 rotates without penalising the
+key at all. Above that, whole models fall back — including a 404 path added
+after a Gemini model was silently deprecated mid-project.
+
+**Large schemas do not fit in a prompt.** A 100-table database sent verbatim
+costs tokens on every call and gives the model more chances to join the wrong
+thing. Tables are scored against the words in the question — matching
+`snake_case`, `camelCase` and `PascalCase`, and singular against plural — and
+then one hop of foreign-key traversal pulls in the join targets a query needs
+even when the question never names them. The output states how many tables were
+hidden, so the model asks for the full map instead of concluding a table does
+not exist.
+
+**Models get names wrong.** Rather than returning a syntax error and paying for
+another round trip, `sql_repair.py` resolves each identifier against the live
+schema by similarity and rewrites the query, reporting every correction it made
+so a wrong guess is visible rather than silent.
+
+**Hosted databases have sharp edges.** Two bugs found only by deploying: query
+parameters were dropped from connection strings, so every `?sslmode=require`
+database refused the connection; and passing `statement_timeout` as a libpq
+startup option is rejected outright by any pooler in transaction mode — it has
+to be a `SET` on each connection instead.
+
+**Privacy is a design constraint, not a feature.** Credentials live in server
+memory for one session and are never written to disk or returned to the
+browser. `QUERYMANCER_LOCAL_ONLY=1` restricts the model chain to locally-hosted
+models so no data reaches a third party — enforced in `model_chain()` rather
+than by asking users to delete their API keys, because Ollama sitting at the
+end of a fallback chain would only be reached after every cloud key was
+exhausted.
 
 ## Connecting your database
 
@@ -148,6 +261,16 @@ Local models are slower and less accurate at SQL than Gemini. That is the
 trade: correctness and speed against your data never leaving the building.
 
 ## Deploying it somewhere public
+
+The [live demo](https://querymancer.onrender.com) runs on Render's free tier
+from [`render.yaml`](render.yaml), with a Neon Postgres holding the sample data
+seeded by [`seed_demo.py`](seed_demo.py). A [`Dockerfile`](Dockerfile) is
+included for hosts that prefer a container.
+
+To offer a one-click sample database of your own, set `QUERYMANCER_DEMO_URL` to
+a **read-only** connection string. It is used server-side only: the browser
+learns that a demo exists and what to call it, never where it lives or how to
+reach it.
 
 Three things to set before exposing this to the internet.
 
@@ -288,9 +411,23 @@ the limits above control spend.
 ## Tests
 
 ```bash
-pytest
+pytest          # 236 tests, ~12s, no database or API key required
 ```
 
-The suite covers key rotation and failover, read-only enforcement, schema
-discovery, name resolution across naming conventions, and the agent loop. It
-uses a stub model and an in-memory schema, so it needs no database or API key.
+The suite runs against a stub model and temporary SQLite databases, so it needs
+no credentials and no network.
+
+| Area | What is covered |
+|---|---|
+| [`test_key_pool.py`](tests/test_key_pool.py) | Rotation, per-minute vs per-day quota handling, auth retirement, cooldown expiry |
+| [`test_models.py`](tests/test_models.py) | Model-level fallback, and that genuine bugs are *not* swallowed as fallback triggers |
+| [`test_schema_pruning.py`](tests/test_schema_pruning.py) | FK-subgraph selection, naming conventions, that a 100-table schema actually shrinks |
+| [`test_sql_safety.py`](tests/test_sql_safety.py) | Write statements, multi-statement injection, comment evasion |
+| [`test_connection.py`](tests/test_connection.py) | Multi-engine URLs, SSL parameters, statement timeouts, credential masking |
+| [`test_privacy.py`](tests/test_privacy.py) | Local-only enforcement, access gate, cookie flags |
+| [`test_server.py`](tests/test_server.py) | API surface, session isolation, answer caching, demo-credential withholding |
+
+Several tests exist because they caught a real bug — the pooler rejecting a
+startup parameter, a `Secure` cookie silently locking out plain-HTTP users, a
+demo database's hostname leaking through a sidebar label. Each is named after
+the behaviour it protects rather than the function it calls.
