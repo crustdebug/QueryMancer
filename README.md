@@ -272,6 +272,26 @@ a **read-only** connection string. It is used server-side only: the browser
 learns that a demo exists and what to call it, never where it lives or how to
 reach it.
 
+### Keeping a free instance awake
+
+Free tiers sleep after ~15 minutes idle, and the next visitor waits for a cold
+start. Point any uptime checker at `/healthz` every 10 minutes to prevent that:
+
+| Setting | Value |
+|---|---|
+| URL | `https://your-app.onrender.com/healthz` |
+| Type | HTTP(s) |
+| Interval | 10 minutes (under the ~15 minute idle timeout) |
+
+`/healthz` is exempt from the access code — a probe carries no cookie — and it
+also builds the model chain, so the ping absorbs that cost instead of the first
+visitor. It returns 200 even when no API key is configured, because a probe
+that failed on configuration would make the platform roll back an otherwise
+healthy deploy.
+
+[UptimeRobot](https://uptimerobot.com) offers 50 monitors free at 5-minute
+resolution and needs no card.
+
 Three things to set before exposing this to the internet.
 
 **1. Require an access code.** Without one, anyone who finds the URL can point

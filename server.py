@@ -120,12 +120,24 @@ _PUBLIC_PATHS = {"/unlock", "/api/unlock", "/assets/style.css", "/healthz"}
 
 @app.get("/healthz")
 def healthz():
-    """Liveness probe for the hosting platform.
+    """Liveness probe for the hosting platform and uptime pingers.
+
+    Also warms the model chain. On a free tier that sleeps when idle, the
+    process is woken by any request, but the first *question* would still pay
+    to construct the provider clients - so a pinger that only checks liveness
+    leaves the slowest part cold. Building them here moves that cost onto the
+    ping instead of onto the first visitor.
 
     Deliberately reports nothing about configuration: it is reachable without
     the access code, so it must not disclose which providers are configured
-    or whether a database is attached.
+    or whether a database is attached. Warm-up failures are swallowed for the
+    same reason, and because a health check that fails on a missing API key
+    would make the platform roll back a deploy that is otherwise fine.
     """
+    try:
+        get_model()
+    except Exception:  # noqa: BLE001 - never fail the probe over this
+        log.exception("Model warm-up failed during health check")
     return {"status": "ok"}
 
 

@@ -131,6 +131,42 @@ def test_the_health_check_is_reachable_while_locked(locked):
     assert response.json()["status"] == "ok"
 
 
+def test_the_health_check_warms_the_model(monkeypatch):
+    """An uptime pinger keeps the process awake, but the first question would
+    still pay to build the provider clients. Warming here moves that cost off
+    the first visitor."""
+    monkeypatch.setattr(server, "ACCESS_CODE", "")
+    monkeypatch.setattr(server, "_model", None)
+
+    built = []
+
+    class FakeModel:
+        def bind_tools(self, tools):
+            built.append(True)
+            return self
+
+    monkeypatch.setattr(server, "RotatingChatModel", lambda: FakeModel())
+    with TestClient(server.app) as client:
+        assert client.get("/healthz").status_code == 200
+    assert built, "health check did not warm the model"
+
+
+def test_the_health_check_survives_a_model_that_cannot_be_built(monkeypatch):
+    """A missing API key must not fail the probe: the platform would read that
+    as an unhealthy deploy and roll back a release that is otherwise fine."""
+    monkeypatch.setattr(server, "ACCESS_CODE", "")
+    monkeypatch.setattr(server, "_model", None)
+
+    def explode():
+        raise RuntimeError("No usable model configured.")
+
+    monkeypatch.setattr(server, "RotatingChatModel", explode)
+    with TestClient(server.app) as client:
+        response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
 def test_the_health_check_discloses_nothing_about_configuration(locked):
     """It is reachable without the access code, so it must not leak which
     providers are configured or whether a database is attached."""
