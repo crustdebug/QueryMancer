@@ -117,8 +117,9 @@ resending prior output on every step.
 | [`answer_cache.py`](answer_cache.py) | TTL'd answer cache keyed by question + database |
 | [`server.py`](server.py) | HTTP API, access gate, static hosting |
 
-Roughly 3,500 lines of application code and 1,700 lines of tests, no frontend
-build step — the UI is hand-written HTML/CSS/JS served directly by FastAPI.
+There is no frontend build step: the UI is hand-written HTML, CSS and
+JavaScript served directly by FastAPI, so the whole app runs from a single
+`uvicorn` process with no npm toolchain to install or keep current.
 
 ## Engineering notes
 
